@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 namespace previously {
 
@@ -39,14 +40,9 @@ constexpr std::int64_t same_interval_divisor = 4;
 
 /// Whether `interval` has the same length as `reference`, within a quarter of `reference`. One
 /// rule for every comparison of intervals: tempo changes, phase shifts and slowed clocks.
-[[nodiscard]] sample_time abs_difference(sample_time a, sample_time b) noexcept
-{
-    return a > b ? a - b : b - a;
-}
-
 [[nodiscard]] bool same_length(sample_time interval, sample_time reference) noexcept
 {
-    return abs_difference(interval, reference) <= reference / same_interval_divisor;
+    return abs(interval - reference) <= reference / same_interval_divisor;
 }
 
 /// Silence for this long means the clock stopped. Above 2 periods with a margin wider than the
@@ -196,15 +192,13 @@ void clock_tracker::reset(sample_time when) noexcept
 
 void clock_tracker::advance(sample_time now) noexcept
 {
-    // While an outlier is pending, the clock may already be running at the outlier's longer
-    // interval (the first pulse of a slowdown), so judge "stopped" against the longer of the
-    // two. Otherwise a slowdown whose next pulse is a little late would read as a stopped clock
-    // and gain filled-in pulses that nothing later retires.
-    const sample_time expected_gap =
-        outlier_interval_ ? std::max(period_, *outlier_interval_) : period_;
-
+    // "Stopped" is judged against the current period even while an outlier is pending. Judging
+    // against the outlier's longer interval would protect a halving whose confirming pulse is
+    // late, but it would also delay freewheeling after a plain late hiccup, and a short stop then
+    // gets no fill-ins: the returning pulse is numbered too low, by an amount that grows with the
+    // hiccup. That is the commoner and worse error (docs/learning/clock-tracking.md §6).
     if (state_ == clock_state::locked && latest_raw_ &&
-        now - *latest_raw_ > stopped_after(expected_gap)) {
+        now - *latest_raw_ > stopped_after(period_)) {
         state_ = clock_state::freewheeling;
     }
 
@@ -287,7 +281,9 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
     // Refuse distances whose time would overflow: the bound depends on the period.
     const std::int64_t steps = sequence - latest_sequence_ - 1;
 
-    if (steps > (INT64_MAX - std::max(predicted_.ticks(), std::int64_t{0})) / period->ticks()) {
+    constexpr std::int64_t max_ticks = std::numeric_limits<std::int64_t>::max();
+
+    if (steps > (max_ticks - std::max(predicted_.ticks(), std::int64_t{0})) / period->ticks()) {
         return std::nullopt;
     }
 

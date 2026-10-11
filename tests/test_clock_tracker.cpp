@@ -508,31 +508,66 @@ TEST_CASE("a phase shift at constant tempo re-anchors within two pulses")
     }
 }
 
-TEST_CASE("a halving whose second slow pulse is late gains no phantom pulses")
+/// Feeds pulses with advance() every 256 samples between them, as an audio engine would.
+void feed_with_blocks(clock_tracker& tracker, std::span<const double> times)
 {
-    // The tempo halves (first slow pulse at 21P), then the second slow pulse arrives late
-    // (23.6P instead of 23P). While that tempo change is unconfirmed, the clock must not be
-    // judged stopped against the old period: filled-in pulses there would never be retired,
-    // and the bar grid would stay off by two until the next reset.
+    std::int64_t block = 0;
+
+    for (const double time : times) {
+        for (; static_cast<double>(block + 1) * 256.0 < time; ++block) {
+            tracker.advance(at(static_cast<double>(block + 1) * 256.0));
+        }
+        tracker.pulse(at(time));
+    }
+}
+
+TEST_CASE("a halving whose confirming pulse is late gains two pulses (pinned limitation)")
+{
+    // The tempo halves (first slow pulse at 21P), then the confirming pulse arrives 0.6 of a
+    // new period late (23.6P instead of 23P). The intervals (2P, 2.6P) don't agree, so neither
+    // a slowdown nor a stop can be told apart from the input: the gap reads as a stopped clock,
+    // two pulses are filled in, and nothing retires them. The count stays two ahead until the
+    // next reset. Pinned as a known limitation: judging "stopped" against the outlier's longer
+    // interval would avoid it, but would misnumber the far commoner case of a hiccup just
+    // before a short stop (see the next test).
     std::vector<double> times = steady_clock(0.0, gate_period, 20);  // pulses 0-19
     for (const double at_periods : {21.0, 23.6, 25.0, 27.0, 29.0, 31.0, 33.0, 35.0}) {
         times.push_back(gate_period * at_periods);
     }
 
     tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed_with_blocks(clock.tracker, times);
 
-    // advance() every 256 samples, as an audio engine would.
-    std::int64_t block = 0;
-    for (const double time : times) {
-        for (; static_cast<double>(block + 1) * 256.0 < time; ++block) {
-            clock.tracker.advance(at(static_cast<double>(block + 1) * 256.0));
-        }
-        clock.tracker.pulse(at(time));
-    }
-
-    CHECK(clock.tracker.latest_pulse() == static_cast<std::int64_t>(times.size()) - 1);
+    CHECK(clock.tracker.latest_pulse() == static_cast<std::int64_t>(times.size()) - 1 + 2);
     CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period * 2.0)) <
           0.01);
+}
+
+TEST_CASE("a hiccup just before a short stop does not change how the return is numbered")
+{
+    // Pulse 20 arrives late, then the clock stops and returns on the grid. The returning pulse
+    // must get the same number as it would without the hiccup: the stop is filled in exactly as
+    // usual.
+    for (const double pulse_20 : {20.3, 20.6}) {
+        for (const double back_at : {23.4, 24.0, 25.0, 26.0, 27.0}) {
+            CAPTURE(pulse_20);
+            CAPTURE(back_at);
+
+            std::vector<double> times = steady_clock(0.0, gate_period, 20);
+            times.push_back(gate_period * pulse_20);
+            times.push_back(gate_period * back_at);
+
+            std::vector<double> clean = steady_clock(0.0, gate_period, 21);
+            clean.push_back(gate_period * back_at);
+
+            tracked_clock with_hiccup{clock_tracker_config::gate(rate_48k)};
+            tracked_clock without{clock_tracker_config::gate(rate_48k)};
+            feed_with_blocks(with_hiccup.tracker, times);
+            feed_with_blocks(without.tracker, clean);
+
+            CHECK(with_hiccup.tracker.latest_pulse() == without.tracker.latest_pulse());
+        }
+    }
 }
 
 TEST_CASE("extrapolating far ahead never overflows")

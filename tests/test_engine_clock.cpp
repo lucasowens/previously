@@ -443,7 +443,7 @@ TEST_CASE("a pulse more than half a period off is covered, but its index is not 
             const bool covered = std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
                 return pulse.time <= real + 0.01 && real - pulse.time < gate_period / 2.0;
             });
-            CHECK((covered || real < gate_period * 1.5));  // pulse 0 precedes the tempo
+            CHECK((covered || real < gate_period / 2.0));  // only pulse 0 precedes the tempo
         }
     }
 }

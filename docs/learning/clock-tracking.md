@@ -189,7 +189,7 @@ measurements.** The rules now follow a single principle:
 | Phase shift | The next interval matches the **current period** (within ¼) | The clock carried on at the same tempo from a new phase: re-anchor the phase only. Checked before the tempo-change rule, so a shift of ¼–⅓ of a period isn't briefly mistaken for a new tempo. |
 | Tempo change | The next interval matches the **outlier's** (within ¼) | Re-acquire from that interval. Three real edges agree, so the fit starts at 3 and the very next pulse already has hiccup immunity. The pulse count continues. |
 | Provisional tempo | A tempo resting on one interval (fewer than 3 pulses in the fit) | An outlier re-acquires at once: the first interval is as likely to be wrong (a stray edge) |
-| Clock stopped | No pulse for **2.5 periods** (of the longer of the period and a pending outlier's interval) | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. The pending-outlier part matters when a slowdown's confirming pulse is late: judged against the old period, it would read as a stop and gain fill-ins nothing retires. |
+| Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. Judged against the current period even while an outlier is pending, so a hiccup just before a short stop doesn't change how the return is numbered. The known cost: a halving whose confirming pulse is more than ¼ late (intervals 2P then 2.6P, which genuinely don't agree) reads as a stop and keeps two filled-in pulses until the next reset. Pinned by a test. |
 | Clock returns | A real pulse while freewheeling | **Re-anchor phase only:** the pulse may land anywhere in its slot, so the gap measures phase, not tempo. The *next* real pulse measures the tempo from two real edges. |
 | Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. |
 | Very long silence | More slots closed than the history holds | Skipped in O(1); at most `history_capacity()` fill-ins are written |
@@ -281,7 +281,7 @@ compound case, and an overflow. Each fix got a test, then each fix was removed t
 |---|---|---|
 | Phase-shift verdict | **Survived** | The end state and the period were identical; what the verdict changes is the *prediction* during the transition (clock out on the new phase after two pulses, not three). The test now checks the prediction after each shifted pulse. Fourth time the same lesson: check the moments that matter. |
 | Fit of 3 after a confirmed change | Caught | — |
-| Stop detection ignores the pending outlier | Caught | — |
+| Stop detection ignores the pending outlier | Caught | — (fix 3 was later reverted: the follow-up review showed it moved the inconsistency to the commoner case of a hiccup before a short stop, where the misnumbering grows with the hiccup; both cases are now pinned) |
 | Overflow guard (UBSan) | Caught | — |
 | "Same length" tolerance widened to a half | Caught | — |
 
