@@ -128,6 +128,23 @@ uses 61% of it (mostly libDaisy and newlib). Before the engine grows much, the f
 libDaisy's **bootloader** layout: the program lives in the 8 MB QSPI flash and runs from SRAM. The
 build fails if the budget is exceeded (T0).
 
+**Internal SRAM.** Fixed engine state lives in internal SRAM, not SDRAM:
+
+| Region | Where it lives |
+|---|---|
+| AXI SRAM, 512 KB | Default under the current linker script |
+| DTCM, 128 KB | Shared with `.data` and the stack under the QSPI bootloader layout; `.bss` is already about 52 KB there |
+
+Budget items so far:
+
+| Item | Size | Note |
+|---|---|---|
+| Clock tracker history | 8 bytes × capacity | The owner provides it: 256 entries (2 KB) cover 16 bars at 4 PPQN; 1,536 (12 KB) at 24 PPQN |
+
+The firmware owner places these buffers explicitly. Today T0 checks only flash. Adding an SRAM
+budget check from the linker's memory report is an open item, due before the engine state grows
+past a few KB.
+
 **SDRAM access.** Sequential access (recording, Tape playback) is cheap. Random access (granular,
 WSOLA search) costs cache misses. Hot read windows can be staged into internal SRAM, measured
 in T5.
@@ -168,20 +185,49 @@ are 5 V tolerant.
 
 ### 3.3 Clock tracker
 
-The `clock_tracker` turns noisy edge timestamps into a clean **tempo** (samples per beat) and
-**beat phase**:
+`clock_tracker` (P1, implemented) turns noisy edge timestamps into a tempo and a pulse-indexed
+grid. Full explanation, measurements and the mutation-testing record:
+[docs/learning/clock-tracking.md](learning/clock-tracking.md).
 
-- A **second-order PLL** (a phase detector plus a proportional-integral loop filter) tracks period
-  and phase. Its bandwidth adapts: fast to acquire, slow once locked. Tempo ramps are followed
-  without lag error.
-- **PPQN** is configurable for gates (1, 2, 4, 24; default 4, meaning 16th notes). MIDI is fixed
-  at 24, plus Start, Stop, Continue and Song Position Pointer.
-- **Reset** (gate or MIDI Start) re-aligns the bar phase.
-- **Clock loss:** if no edge arrives within 2 periods, the tracker freewheels at the last tempo.
-  The LED shows the freewheel state.
-- **Source priority:** gate, then MIDI, then tempo set by the first loop, then tap tempo. Patching
-  a clock takes over smoothly through the PLL.
-- **Meter:** beats per bar (default 4) sets the bar grid.
+- **Time:** `sample_time`, Q47.16 fixed point (64-bit ticks, 1/65,536 sample, a range of 93
+  years). Absolute time never lives in a float.
+- **Filter:** an α-β tracker (equivalent to a second-order DLL), with β derived from α for
+  critical damping and least-squares gains during acquisition. Tempo is exact after 2 pulses.
+- **Grid:**
+  - Integer pulse indices; bars are `index / (pulses_per_beat × beats_per_bar)`. The **meter**
+    (beats per bar, default 4) is configurable.
+  - Bars use floor division, so pulses before a reset fall in negative bars.
+  - A history of filtered pulse times, in storage provided by the owner, answers questions
+    about the past; extrapolation answers questions about the future.
+- **PPQN:** configurable. The gate preset is 4 (16th notes); 1, 2 and 24 are planned as UI
+  choices. MIDI is 24.
+- **Presets, measured:**
+
+  | Preset | α | Ramp lag (10% over 8 bars) | Jitter |
+  |---|---|---|---|
+  | Gate | 0.9 | 0.6 samples | ×0.92 RMS (not amplified) |
+  | MIDI | 0.2 | 4 samples | 27.7 → 10.8 samples RMS on a jittery ramp |
+
+  An α-β tracker lags slightly behind steady tempo ramps; lower α smooths more but lags more.
+- **Robustness. Rule: tempo is only ever measured between two real edges:**
+  - a pulse within 4 ms of the previous one is a double trigger
+  - an interval over 4 s while acquiring discards a stray first edge
+  - an error over ¼ period re-acquires, and the pulse count continues
+  - 2.5 silent periods switch to freewheeling: pulses are filled in at the last tempo
+  - a returning clock re-anchors the phase only; the next real pulse measures the tempo
+  - two equal long gaps mean a slowed clock: the fill-ins are retired
+- **Reset** (gate, or MIDI Start): the pulse within 2 ms of it, delivered in either order,
+  becomes bar 0. A late-delivered reset is resolved from the history.
+- **Timing contract:** pulses are delivered in time order, each block's pulses before
+  `advance(block_end)`.
+- **Clock loss** is visible: the beat LED shows the freewheel state (§9.1).
+- **Not yet implemented (P1 continues):**
+  - MIDI Start, Stop, Continue and Song Position Pointer
+  - the **internal** tempo source (§3.2)
+  - tap tempo
+  - **source priority:** gate, then MIDI, then the tempo set by the first loop (§4.1), then tap
+    tempo. Patching a clock takes over smoothly.
+  - PPQN selection from the UI
 
 ### 3.4 Retrospective capture (the headline feature)
 
@@ -684,7 +730,7 @@ mode with drift correction, latency calibration.
 
 | Side | Criteria |
 |---|---|
-| Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp. Click metric ≤ 1.1 on the full test-signal set. |
+| Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp (**clock tracker: met**: < 0.01 steady, 0.6 ramp). Click metric ≤ 1.1 on the full test-signal set. |
 | Device | Capture alignment vs. clock edge within ±1 sample at the jacks. No drift over 64 bars. |
 
 ### P2 — Performance

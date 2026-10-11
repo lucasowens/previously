@@ -110,6 +110,13 @@ private:
     std::uint32_t hz_;
 };
 
+/// Rounds to the nearest integer, halves away from zero. (std::lround is not constexpr in
+/// C++20, and on the M7 `long` is 32 bits.)
+[[nodiscard]] constexpr std::int64_t round_to_int64(float value) noexcept
+{
+    return static_cast<std::int64_t>(value >= 0.0F ? value + 0.5F : value - 0.5F);
+}
+
 /// Converts a sample count to seconds at the given rate.
 [[nodiscard]] constexpr seconds to_seconds(samples count, sample_rate rate) noexcept
 {
@@ -119,10 +126,7 @@ private:
 /// Converts a duration to the nearest whole number of samples at the given rate.
 [[nodiscard]] constexpr samples to_samples(seconds duration, sample_rate rate) noexcept
 {
-    const float exact   = duration.value() * static_cast<float>(rate.hz());
-    const float rounded = exact >= 0.0F ? exact + 0.5F : exact - 0.5F;
-
-    return samples{static_cast<std::int64_t>(rounded)};
+    return samples{round_to_int64(duration.value() * static_cast<float>(rate.hz()))};
 }
 
 }  // namespace previously

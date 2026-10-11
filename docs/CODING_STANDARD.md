@@ -125,7 +125,13 @@ Host tests may use exceptions, because doctest uses them internally.
 - **Strong unit types** for every physical quantity: `samples`, `seconds`, `sample_rate`, with
   `beats` and `ratio` to come. Conversions are named functions (`to_seconds`, `to_samples`). Raw
   numbers carrying units across interfaces are not allowed.
-- **Absolute time is `samples` (`int64`).** Never store absolute time in a float.
+- **Absolute time is never a float.**
+  - Whole-sample counts are `samples` (`int64`).
+  - Sub-sample time is `sample_time`: Q47.16 fixed point, 64-bit ticks with 65,536 per sample.
+- **`sample_time` is not a `quantity<>`, on purpose.** A quantity is constructed from its raw
+  value, so `sample_time{48'000}` would read as 48,000 samples but mean 48,000 ticks.
+  `sample_time` keeps its raw constructor private, and every way in is named: `from_ticks`,
+  `from_samples`, `from_samples_float`.
 - **`float`, not `double`.** The M7 has a single-precision FPU, and double precision is emulated
   in software. `-Wdouble-promotion` catches accidental promotion. Floating-point literals carry
   the `F` suffix: `0.5F`.
