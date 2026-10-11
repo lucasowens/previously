@@ -171,7 +171,14 @@ increased, and peak within a sensible bound.
 | Tempo jump | Error more than ¼ period | Re-acquire from this pulse: new period = latest interval. The pulse count continues, so bars keep their numbers. |
 | Clock stopped | No pulse for 2 periods (checked in `advance()`) | **Freewheel:** keep adding pulses at the last tempo so the grid keeps running |
 | Clock restarts | A pulse arrives while freewheeling | If it's on the predicted grid, simply lock again. Otherwise re-acquire. |
-| Reset input | Within 2 ms of a pulse, either order | That pulse becomes index 0, the start of bar 0 |
+| Reset input | Within 2 ms of a pulse's *raw* edge, either order | That pulse becomes index 0, the start of bar 0 |
+
+Time windows (the 0.5 ms acquisition floor and the 2 ms reset window) are defined in **seconds**
+and converted using the configured sample rate. A fixed number of samples would silently halve at
+96 kHz. Reset matching compares against the **raw** edge time. With the MIDI preset the filtered
+time can sit tens of samples away from the real edge, so the filtered time is the wrong thing to
+compare against. Both came from code review on PR #1 and have tests that fail against the old
+behaviour.
 
 A deliberate omission: a *single dropped pulse* isn't synthesized while locked. A pulse arriving
 one period late looks exactly like the tempo halving, and halving tempo is a common musical move.
