@@ -197,6 +197,11 @@ clock_state clock_tracker::state() const noexcept
     return state_;
 }
 
+std::int64_t clock_tracker::pulses_per_beat() const noexcept
+{
+    return pulses_per_beat_;
+}
+
 std::int64_t clock_tracker::pulses_per_bar() const noexcept
 {
     return pulses_per_bar_;

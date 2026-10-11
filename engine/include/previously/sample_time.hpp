@@ -38,6 +38,13 @@ namespace previously {
     return (remainder != 0 && ((remainder < 0) != (denominator < 0))) ? quotient - 1 : quotient;
 }
 
+/// The remainder of floor_divide: always in [0, divisor) for a positive divisor, also for
+/// negative values (unlike %). Pulse -1 is the last pulse of its bar, not pulse "-1" of bar 0.
+[[nodiscard]] constexpr std::int64_t floor_modulo(std::int64_t value, std::int64_t divisor) noexcept
+{
+    return value - (floor_divide(value, divisor) * divisor);
+}
+
 class sample_time {
 public:
     static constexpr int          fraction_bits    = 16;

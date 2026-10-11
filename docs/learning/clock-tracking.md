@@ -256,6 +256,54 @@ the final state.
 
 ---
 
+## 8. Getting pulses in, and clock out
+
+The tracker only sees timestamps. Two adapters produce and consume them.
+
+### In: timing edges from sampled signals (the Rack adapter)
+
+`edge_detector` is a Schmitt trigger using Rack's conventions: high at 1 V, re-armed only after
+the signal falls to 0.1 V, so noise on a high gate never retriggers. Its timing rule rests on what
+a sampled signal can actually tell you:
+
+- **A digital step carries no sub-sample information.** The gate is low on one sample and high on
+  the next. The module that produced it means "this sample", so the edge is timed at the sample
+  where it is first seen. That also lines Rack clocks up with Rack audio, sample for sample.
+- **An edge caught mid-rise does.** If the previous sample was already above 0.1 V (a slewed or
+  filtered gate), the 1 V crossing is found by linear interpolation between the two samples.
+
+Every timestamp is relative to the start of the audio block, as the engine requires. A mid-rise
+edge can interpolate back across a block boundary, into a block that has already been processed.
+It is placed at the new block's first frame instead: an error under one sample, and only for
+slewed edges.
+
+### Out: reporting each grid pulse exactly once
+
+After each block the engine reports the grid pulses that fell inside it. The adapter turns them
+into clock-out triggers and beat lights. The hard requirement is **each pulse exactly once**, and
+the obvious approaches fail it:
+
+- **By pulse index fails.** A reset relabels indices: pulse 37 becomes pulse 0, and the next 37
+  pulses would look like repeats. A slowed clock retires fill-ins that were already reported.
+- **By "time inside this block" fails.** A pulse's estimated time moves as real edges correct it,
+  and can cross a block boundary, being reported twice or never.
+
+What works is **time with hysteresis**: report each grid pulse up to the end of the block that is
+more than **half a period** after the last pulse reported. Estimates move by less than half a
+period (a correction is at most a quarter), so a pulse can't be reported twice. Real new pulses
+are a whole period apart, so none is skipped. Tests check this across:
+
+- every block size from 1 to 48
+- ±40-sample jitter
+- freewheeling and returning at ±0.4 of a period
+- resets
+- tempo doubling and slowing to a third
+
+The adapter then plays each reported pulse as a 1 ms trigger **one block later, at the same
+offset**: the same one-block latency the audio has, so clock out stays aligned with the sound.
+
+---
+
 ## Further reading
 
 - Fons Adriaensen, *Using a DLL to filter time* (2005). The DLL view of the same filter, as used in

@@ -73,5 +73,11 @@ CheckOptions:
   - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }
   - { key: cppcoreguidelines-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }
 
+  # Multi-line initializer lists end with a comma (stable diffs). The single-line rule is off:
+  # in LLVM 23 it misfires on empty braced arguments (`f({}, {})` is reported as having a
+  # trailing comma), and clang-format already keeps single-line lists comma-free.
+  - { key: readability-trailing-comma.SingleLineCommaPolicy, value: Ignore }
+  - { key: readability-trailing-comma.MultiLineCommaPolicy,  value: Append }
+
   # Literal suffixes are upper case: 0.5F, 48000U.
   - { key: readability-uppercase-literal-suffix.NewSuffixes, value: 'F;U;L;UL;LL;ULL' }

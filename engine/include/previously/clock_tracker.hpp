@@ -116,6 +116,8 @@ public:
 
     [[nodiscard]] clock_state state() const noexcept;
 
+    [[nodiscard]] std::int64_t pulses_per_beat() const noexcept;
+
     [[nodiscard]] std::int64_t pulses_per_bar() const noexcept;
 
     /// How many past pulses can be looked up.
