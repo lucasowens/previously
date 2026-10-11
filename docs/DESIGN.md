@@ -128,11 +128,15 @@ so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48
 | Stage | Flash used | Mostly |
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
-| With the clock wiring (P1) | 72% (94 KB) | About 9.5 KB of engine and tracker code at `-O3` with LTO |
+| With the clock wiring and hiccup handling (P1) | 73% (95 KB) | About 11 KB of engine and tracker code at `-O3` with LTO |
 
-**The next firmware task, before retro capture,** is moving to libDaisy's **bootloader** layout:
-the program lives in the 8 MB QSPI flash and runs from SRAM. The build fails if the budget is
-exceeded (T0).
+**Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
+build fails if the flash budget is exceeded (T0). When it does:
+
+1. Build the firmware for size (`-Os`). This is hardware-free, typically recovers 20–30%, and the
+   speed cost is measured and reported.
+2. Then move to libDaisy's **bootloader** layout: the program lives in the 8 MB QSPI flash and
+   runs from SRAM.
 
 **Internal SRAM.** Fixed engine state lives in internal SRAM, not SDRAM:
 
@@ -752,6 +756,18 @@ Each phase has **host-pass** criteria (T0–T4) and **device-pass** criteria (T5
 Clock tracker (gate, MIDI, internal), retro capture, 2 slots, crossfader, seam crossfade, Tape
 mode with drift correction, latency calibration.
 
+**Progress:**
+
+| Item | State |
+|---|---|
+| Clock tracker | Done: PRs #1, #4 |
+| Engine and Rack clock wiring, clock out | Done: PR #2 |
+| Retro capture | Next |
+| 2 slots, crossfader, seam crossfade | To do |
+| Tape mode and drift correction | To do |
+| MIDI clock, internal tempo, tap tempo | To do |
+| Latency calibration | Deferred (hardware) |
+
 | Side | Criteria |
 |---|---|
 | Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp (**clock tracker: met**: < 0.01 steady, 0.6 ramp). Click metric ≤ 1.1 on the full test-signal set. |
@@ -782,8 +798,8 @@ Schematic, PCB, panel, cue codec and SD save/load.
 4. Panel width (14 vs. 20 HP), and display vs. no display (§9.3), including panel variant vs. header option.
 5. Whether USB-host controller support ships on the module.
 6. Undo depth beyond one level (each level costs one 9.2 MB buffer).
-7. Moving the firmware to the QSPI bootloader layout is now due, before retro capture: flash is
-   72% used (§2.3).
+7. When to move the firmware to the QSPI bootloader layout. Deferred with the rest of the
+   hardware work; `-Os` comes first if flash runs out (§2.3).
 
 ---
 
