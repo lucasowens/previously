@@ -442,6 +442,115 @@ TEST_CASE("a single late or early pulse in a steady clock changes nothing (issue
     }
 }
 
+TEST_CASE("a hiccup one pulse after a confirmed tempo change is still a hiccup")
+{
+    // A halving is confirmed at its second slow pulse. Three real edges then agree on the new
+    // tempo, so the very next pulse already has hiccup immunity.
+    // Pulses 0-19 at P, the first slow pulse at 21P, confirmed at 23P; 25.6P is a 0.3 hiccup at
+    // the new tempo.
+    std::vector<double> times = steady_clock(0.0, gate_period, 20);
+    for (const double at_periods : {21.0, 23.0, 25.6, 27.0, 29.0, 31.0}) {
+        times.push_back(gate_period * at_periods);
+    }
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed(clock.tracker, std::span{times}.first(22));  // through the confirming pulse at 23P
+    REQUIRE(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period * 2.0)) <
+            0.01);
+
+    for (std::size_t i = 22; i < times.size(); ++i) {
+        clock.tracker.pulse(at(times[i]));
+
+        CAPTURE(i);
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period * 2.0)) <
+              0.01);
+    }
+
+    CHECK(clock.tracker.latest_pulse() == static_cast<std::int64_t>(times.size()) - 1);
+}
+
+TEST_CASE("a phase shift at constant tempo re-anchors within two pulses")
+{
+    // From pulse 20 on, every pulse is shifted by d: the clock carried on at the same tempo from
+    // a new phase. Pulse 20 is an outlier; pulse 21's interval matches the current period, so
+    // the phase re-anchors. The tempo never changes, and the grid is right from pulse 21.
+    for (const double shift : {0.3, 0.4, 0.6, -0.3, -0.4, -0.6}) {
+        CAPTURE(shift);
+
+        std::vector<double> times = steady_clock(0.0, gate_period, 40);
+        for (std::size_t i = 20; i < times.size(); ++i) {
+            times[i] += gate_period * shift;
+        }
+
+        tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+
+        for (std::size_t i = 0; i < times.size(); ++i) {
+            clock.tracker.pulse(at(times[i]));
+
+            if (i >= 2) {
+                CAPTURE(i);
+                CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period)) <
+                      0.01);
+            }
+
+            // From the second shifted pulse on, the next pulse is predicted on the new phase:
+            // clock out follows the shift after two pulses, not three.
+            if (i >= 21 && i + 1 < times.size()) {
+                CAPTURE(i);
+                const auto next = static_cast<std::int64_t>(i) + 1;
+                CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_time(next)),
+                                                times[i + 1])) < 0.01);
+            }
+        }
+
+        CHECK(clock.tracker.latest_pulse() == 39);
+        CHECK(max_error(clock.tracker, times, 21) < 0.01);
+    }
+}
+
+TEST_CASE("a halving whose second slow pulse is late gains no phantom pulses")
+{
+    // The tempo halves (first slow pulse at 21P), then the second slow pulse arrives late
+    // (23.6P instead of 23P). While that tempo change is unconfirmed, the clock must not be
+    // judged stopped against the old period: filled-in pulses there would never be retired,
+    // and the bar grid would stay off by two until the next reset.
+    std::vector<double> times = steady_clock(0.0, gate_period, 20);  // pulses 0-19
+    for (const double at_periods : {21.0, 23.6, 25.0, 27.0, 29.0, 31.0, 33.0, 35.0}) {
+        times.push_back(gate_period * at_periods);
+    }
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+
+    // advance() every 256 samples, as an audio engine would.
+    std::int64_t block = 0;
+    for (const double time : times) {
+        for (; static_cast<double>(block + 1) * 256.0 < time; ++block) {
+            clock.tracker.advance(at(static_cast<double>(block + 1) * 256.0));
+        }
+        clock.tracker.pulse(at(time));
+    }
+
+    CHECK(clock.tracker.latest_pulse() == static_cast<std::int64_t>(times.size()) - 1);
+    CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period * 2.0)) <
+          0.01);
+}
+
+TEST_CASE("extrapolating far ahead never overflows")
+{
+    // The safe distance depends on the period: about 2^34 pulses at 4 PPQN, 120 BPM. Built with
+    // UBSan, an overflow here would abort the test.
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed(clock.tracker, steady_clock(0.0, gate_period, 10));
+
+    constexpr std::int64_t two_to_the_20 = 1'048'576;
+    constexpr std::int64_t two_to_the_35 = 34'359'738'368;
+    constexpr std::int64_t two_to_the_39 = 549'755'813'888;
+
+    CHECK_FALSE(clock.tracker.pulse_time(9 + two_to_the_35).has_value());
+    CHECK_FALSE(clock.tracker.pulse_time(9 + two_to_the_39).has_value());
+    CHECK(clock.tracker.pulse_time(9 + two_to_the_20).has_value());
+}
+
 TEST_CASE("two identical hiccups far apart are still hiccups")
 {
     // Each hiccup is judged on its own: the interval remembered from the first must be forgotten

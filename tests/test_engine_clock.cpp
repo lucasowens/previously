@@ -404,6 +404,50 @@ TEST_CASE("a single late pulse is reported once, with no extras (issue #3)")
     }
 }
 
+TEST_CASE("a pulse more than half a period off is covered, but its index is not reported once")
+{
+    // Beyond half a period, a displaced pulse is closer to its neighbour's slot than to its own.
+    // The guarantee that still holds: every real pulse is covered. The labels are pinned:
+    //   late (+0.6P): index 20 is reported twice (prediction, then the real pulse), 21 never
+    //   early (-0.6P): index 20 is never reported (inside the window after pulse 19)
+    struct displaced {
+        double                    offset;
+        std::vector<std::int64_t> indices;  // reported indices from pulse 19 to 23
+    };
+
+    const std::array<displaced, 3> cases{
+        displaced{.offset = 0.45, .indices = {19, 20, 21, 22, 23}},
+        displaced{.offset = 0.6, .indices = {19, 20, 20, 22, 23}},
+        displaced{.offset = -0.6, .indices = {19, 21, 22, 23}},
+    };
+
+    for (const displaced& c : cases) {
+        CAPTURE(c.offset);
+
+        std::vector<double> times = steady(0.0, gate_period, 30);
+        times[20] += gate_period * c.offset;
+
+        auto       audio_engine = make_engine(32);
+        const auto reported =
+            run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
+
+        std::vector<std::int64_t> indices;
+        for (const reported_pulse& pulse : reported) {
+            if (pulse.time > gate_period * 18.5 && pulse.time < gate_period * 23.5) {
+                indices.push_back(pulse.index);
+            }
+        }
+        CHECK(indices == c.indices);
+
+        for (const double real : times) {
+            const bool covered = std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
+                return pulse.time <= real + 0.01 && real - pulse.time < gate_period / 2.0;
+            });
+            CHECK((covered || real < gate_period * 1.5));  // pulse 0 precedes the tempo
+        }
+    }
+}
+
 TEST_CASE("a reset while the clock is stopped reports the new bar 0 as it happens")
 {
     // The clock stops after pulse 19; a reset lands between grid slots 27 and 28. The next slot,

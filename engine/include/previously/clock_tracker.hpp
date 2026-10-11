@@ -31,9 +31,13 @@
 //                    replaced by this one
 //   outlier          a pulse more than a quarter period off its prediction is recorded where it
 //                    happened, but the tempo is kept until the next pulse decides:
-//   tempo change       its interval agrees with the outlier's: re-acquire from that interval
 //   hiccup             it lands back on the old grid: the outlier was a one-off; nothing changes
-//                    The pulse count continues either way.
+//   phase shift        its interval matches the current period: re-anchor the phase only
+//   tempo change       its interval matches the outlier's: re-acquire from that interval
+//                    The pulse count continues either way. Two exceptions: a tempo resting on a
+//                    single interval is provisional and re-acquires on any outlier (a stray edge
+//                    is as likely as a hiccup); and after a freewheel return, the returning pulse
+//                    and the next two rebuild the fit, so hiccup immunity resumes from the fourth.
 //   clock stopped    2.5 periods without a pulse switches to freewheeling: the tracker fills in
 //                    pulses at the last tempo so the grid keeps running. Each fill-in is committed
 //                    half a period after its slot, so a late real pulse can still claim the slot.

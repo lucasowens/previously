@@ -219,8 +219,10 @@ grid. Full explanation, measurements and the mutation-testing record:
   - a pulse within 4 ms of the previous one is a double trigger
   - an interval over 4 s while acquiring discards a stray first edge
   - an error over ¼ period is an outlier: recorded where it happened, tempo kept; the next pulse
-    decides. Agreeing intervals mean a tempo change (re-acquire); landing back on the grid means
-    a hiccup (nothing changes). A tempo resting on one interval re-acquires at once.
+    decides. Landing back on the grid means a hiccup (nothing changes); an interval matching
+    the current period means a phase shift (re-anchor the phase); an interval matching the
+    outlier's means a tempo change (re-acquire). A tempo resting on one interval re-acquires at
+    once.
   - 2.5 silent periods switch to freewheeling: pulses are filled in at the last tempo
   - a returning clock re-anchors the phase only; the next real pulse measures the tempo
   - two equal long gaps mean a slowed clock: the fill-ins are retired

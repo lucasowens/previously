@@ -6,6 +6,7 @@
 #include "previously/contract.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace previously {
 
@@ -35,6 +36,18 @@ constexpr std::int64_t slot_window_divisor = 2;
 
 /// Two gaps whose lengths differ by at most a quarter of the first are "the same length".
 constexpr std::int64_t same_interval_divisor = 4;
+
+/// Whether `interval` has the same length as `reference`, within a quarter of `reference`. One
+/// rule for every comparison of intervals: tempo changes, phase shifts and slowed clocks.
+[[nodiscard]] sample_time abs_difference(sample_time a, sample_time b) noexcept
+{
+    return a > b ? a - b : b - a;
+}
+
+[[nodiscard]] bool same_length(sample_time interval, sample_time reference) noexcept
+{
+    return abs_difference(interval, reference) <= reference / same_interval_divisor;
+}
 
 /// Silence for this long means the clock stopped. Above 2 periods with a margin wider than the
 /// quarter-period tolerance, so a tempo exactly halving can never be mistaken for a stop.
@@ -183,8 +196,15 @@ void clock_tracker::reset(sample_time when) noexcept
 
 void clock_tracker::advance(sample_time now) noexcept
 {
+    // While an outlier is pending, the clock may already be running at the outlier's longer
+    // interval (the first pulse of a slowdown), so judge "stopped" against the longer of the
+    // two. Otherwise a slowdown whose next pulse is a little late would read as a stopped clock
+    // and gain filled-in pulses that nothing later retires.
+    const sample_time expected_gap =
+        outlier_interval_ ? std::max(period_, *outlier_interval_) : period_;
+
     if (state_ == clock_state::locked && latest_raw_ &&
-        now - *latest_raw_ > stopped_after(period_)) {
+        now - *latest_raw_ > stopped_after(expected_gap)) {
         state_ = clock_state::freewheeling;
     }
 
@@ -264,6 +284,13 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
         return std::nullopt;
     }
 
+    // Refuse distances whose time would overflow: the bound depends on the period.
+    const std::int64_t steps = sequence - latest_sequence_ - 1;
+
+    if (steps > (INT64_MAX - std::max(predicted_.ticks(), std::int64_t{0})) / period->ticks()) {
+        return std::nullopt;
+    }
+
     return predicted_time(sequence);
 }
 
@@ -315,21 +342,38 @@ void clock_tracker::lock_on_interval(sample_time when, sample_time interval) noe
 
 void clock_tracker::handle_outlier(sample_time when, sample_time interval) noexcept
 {
-    // A pulse far from its prediction is either a one-off (a hiccup: one late or early pulse in
-    // a steady clock) or the first pulse of a new tempo. One pulse can't tell them apart; the
-    // next one can, by comparing the intervals between real edges. Two consecutive intervals
-    // that agree mean a new tempo. A hiccup's two intervals disagree (P + d, then P - d), and
-    // its next pulse lands back on the old grid. Comparing intervals rather than counting
-    // outliers matters for tempo doubling: there, every other pulse lands on the old grid.
-    const bool tempo_changed = outlier_interval_ && abs(interval - *outlier_interval_) <=
-                                                        *outlier_interval_ / same_interval_divisor;
+    // A pulse far from its prediction is one of three things, and one pulse can't tell which.
+    // The next pulse can, by comparing intervals between real edges:
+    //
+    //   hiccup        one late or early pulse; the next lands back on the old grid (that pulse
+    //                 never reaches here: it is tracked normally and clears the outlier)
+    //   phase shift   the clock carried on at the same tempo from a new phase: the next interval
+    //                 matches the current period
+    //   tempo change  the next interval matches the outlier's interval
+    //
+    // Intervals rather than "two outliers in a row", because at a doubled tempo every other
+    // pulse lands on the old grid. The phase shift is checked first, so a shift of a quarter to a
+    // third of a period is not briefly mistaken for a new tempo.
+    if (outlier_interval_ && same_length(interval, period_)) {
+        outlier_interval_.reset();
+        record(when);
+        predicted_ = when + period_;
+        return;
+    }
+
+    if (outlier_interval_ && same_length(interval, *outlier_interval_)) {
+        lock_on_interval(when, interval);
+
+        // Three real edges agree on the new tempo, so the fit is as good as a third pulse, and
+        // the next pulse already gets hiccup immunity.
+        pulses_in_fit_ = 3;
+        return;
+    }
 
     // A tempo resting on a single interval is provisional: an outlier against it is as likely
     // to mean that interval was wrong (a stray edge before the clock started). Doubt outliers
     // only once the fit has confirmed the tempo with a third pulse.
-    const bool tempo_provisional = pulses_in_fit_ < 3;
-
-    if (tempo_changed || tempo_provisional) {
+    if (pulses_in_fit_ < 3) {
         lock_on_interval(when, interval);
         return;
     }
@@ -381,8 +425,7 @@ void clock_tracker::return_from_freewheel(sample_time when, sample_time previous
     // Retire the fill-ins by rewinding to the real pulse before the previous one, then re-record
     // both real pulses at the new tempo.
     const bool clock_slowed =
-        previous_raw_interval_ && abs(raw_interval - *previous_raw_interval_) <=
-                                      *previous_raw_interval_ / same_interval_divisor;
+        previous_raw_interval_ && same_length(raw_interval, *previous_raw_interval_);
 
     if (clock_slowed && previous_raw_sequence_ >= 0) {
         latest_sequence_ = previous_raw_sequence_;

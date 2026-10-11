@@ -47,8 +47,11 @@ struct grid_pulse {
 ///     no bursts, no merged triggers
 ///   - every real pulse is covered: reported at its time, or stood in for by a prediction less
 ///     than half a period before it
-///   - with a steady or jittery clock, resets, tempo increases, a stopped clock (freewheeling)
-///     and its return, every grid pulse is reported exactly once, with its final index
+///   - with a steady or jittery clock, hiccups and phase shifts of under half a period, resets,
+///     tempo increases, a stopped clock (freewheeling) and its return, every grid pulse is
+///     reported exactly once, with its final index. A pulse displaced by more than half a
+///     period is closer to its neighbour's slot: it is still covered, but an index can be
+///     reported twice or skipped (pinned by a test)
 ///   - when the clock suddenly slows, predictions go out before the slowdown can be known, so a
 ///     pinned number of extra pulses is reported during the transition
 ///     (docs/learning/clock-tracking.md §8)
