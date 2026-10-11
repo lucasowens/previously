@@ -92,8 +92,18 @@ enum class clock_state : std::uint8_t {
     freewheeling,  // pulses stopped; continuing at the last tempo
 };
 
+/// A pulse on the grid: when it is (or will be), and its index as currently labelled.
+struct grid_point {
+    sample_time  time;
+    std::int64_t index{0};
+};
+
 class clock_tracker {
 public:
+    /// Pulses closer together than this are double triggers. It also bounds how many pulses can
+    /// fall in any stretch of time: at most one per 4 ms.
+    static constexpr seconds double_trigger_spacing{0.004F};
+
     /// `history` holds the filtered times of past pulses. The caller owns it, so firmware can
     /// choose which memory it lives in, and it need not be initialized. Its size is how far back
     /// questions can reach: 16 bars in 4/4 is 256 pulses at 4 PPQN, 1,536 at 24 PPQN.
@@ -148,6 +158,17 @@ public:
     /// When bar `bar` starts (from history or extrapolated).
     [[nodiscard]] std::optional<sample_time> bar_start(std::int64_t bar) const noexcept;
 
+    /// The grid pulses with `after` < time < `before`, oldest first: recorded pulses from the
+    /// history, then predicted ones once the tempo is known. Each is labelled as it will be:
+    /// a predicted pulse at or after a pending reset is already numbered from 0. Writes at most
+    /// out.size() pulses and returns how many it wrote.
+    [[nodiscard]] std::size_t
+    pulses_between(sample_time after, sample_time before, std::span<grid_point> out) const noexcept;
+
+    /// How many times a reset has relabelled the grid. A change tells a reporter that pulses it
+    /// already reported may now carry different indices.
+    [[nodiscard]] std::uint32_t resets_applied() const noexcept;
+
 private:
     void lock_on_interval(sample_time when, sample_time interval) noexcept;
     void track(sample_time error) noexcept;
@@ -156,6 +177,7 @@ private:
     void record(sample_time when) noexcept;
     void apply_pending_reset(sample_time when, std::int64_t sequence) noexcept;
     void note_real_pulse(sample_time when) noexcept;
+    void relabel(std::int64_t sequence_of_bar_zero) noexcept;
 
     [[nodiscard]] sample_time  latest_time() const noexcept;
     [[nodiscard]] sample_time  history_at(std::int64_t sequence) const noexcept;
@@ -182,6 +204,7 @@ private:
     std::int64_t               fill_ins_since_raw_{0};
 
     std::optional<sample_time> pending_reset_;
+    std::uint32_t              resets_applied_{0};
 
     // Settings, fixed at construction.
     std::int64_t pulses_per_beat_;

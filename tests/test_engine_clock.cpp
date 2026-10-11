@@ -12,6 +12,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -51,8 +52,11 @@ struct edge {
 
 /// Runs the engine for `total_frames`, in blocks of `block_frames`, delivering each edge in the
 /// block that contains it. Returns every reported grid pulse with its absolute time.
-[[nodiscard]] std::vector<reported_pulse>
-run(engine& target, std::span<const edge> edges, std::size_t total_frames, std::size_t block_frames)
+[[nodiscard]] std::vector<reported_pulse> run(engine&               target,
+                                              std::span<const edge> edges,
+                                              std::size_t           total_frames,
+                                              std::size_t           block_frames,
+                                              std::vector<double>*  bar_restarts = nullptr)
 {
     std::vector<reported_pulse> reported;
     std::vector<float>          silence(block_frames, 0.0F);
@@ -84,6 +88,10 @@ run(engine& target, std::span<const edge> edges, std::size_t total_frames, std::
             events);
 
         const clock_report& report = target.clock();
+
+        if (report.bar_restarted && bar_restarts != nullptr) {
+            bar_restarts->push_back(block_start);
+        }
         for (std::size_t i = 0; i < report.pulse_count; ++i) {
             const grid_pulse& pulse = report.pulses[i];
 
@@ -147,12 +155,12 @@ void check_spacing(std::span<const reported_pulse> pulses, double period)
     }
 }
 
-TEST_CASE("a steady clock is reported pulse for pulse at every block size")
+TEST_CASE("a steady clock is reported pulse for pulse at every block size from 1 to 48")
 {
-    const auto times = steady(100.25, gate_period, 64);
+    const auto times = steady(100.25, gate_period, 24);
     const auto edges = pulses_at(times);
 
-    for (const std::size_t block : {1U, 16U, 32U, 48U}) {
+    for (std::size_t block = 1; block <= 48; ++block) {
         CAPTURE(block);
 
         auto       audio_engine = make_engine(block);
@@ -289,29 +297,189 @@ TEST_CASE("tempo changes are reported without doubled or lost pulses")
             CHECK(std::abs(reported[i].time - times[i + 1]) < 0.01);
         }
     }
+}
 
-    SUBCASE("slowing to a third")
-    {
-        // During the first two slow gaps the clock looks stopped, so the grid freewheels at the
-        // old tempo; once the slowdown is confirmed, reports follow the real pulses exactly.
-        std::vector<double> times = steady(0.0, gate_period, 40);
-        const auto slower = steady(times.back() + (gate_period * 3.0), gate_period * 3.0, 20);
+TEST_CASE("a sudden slowdown reports every real pulse; the transition is pinned")
+{
+    // The grid predicts pulses at the old tempo and reports them before a slowdown can be known.
+    // Every real pulse must still be reported, at its time or covered by a prediction less than
+    // half an old period before it. Reports are never closer than half an old period. Once the
+    // slowdown is confirmed, reports follow the real pulses one for one. The number of extra,
+    // predicted reports during the transition is pinned so it cannot change silently.
+    struct slowdown {
+        double      factor;
+        std::size_t extra_reports;
+    };
+
+    const std::array<slowdown, 6> cases{
+        slowdown{.factor = 1.5, .extra_reports = 1},
+        slowdown{.factor = 2.0, .extra_reports = 1},
+        slowdown{.factor = 2.2, .extra_reports = 1},
+        slowdown{.factor = 2.5, .extra_reports = 2},
+        slowdown{.factor = 3.0, .extra_reports = 4},
+        slowdown{.factor = 4.0, .extra_reports = 6},
+    };
+
+    for (const slowdown& c : cases) {
+        CAPTURE(c.factor);
+
+        std::vector<double> times = steady(0.0, gate_period, 20);
+        const auto          slower =
+            steady(times.back() + (gate_period * c.factor), gate_period * c.factor, 8);
         times.insert(times.end(), slower.begin(), slower.end());
 
         auto       audio_engine = make_engine(32);
         const auto reported =
             run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
 
-        const auto confirmed = std::span{reported}.last(15);
-        const auto expected  = std::span{times}.last(15);
-        for (std::size_t i = 0; i < confirmed.size(); ++i) {
-            CHECK(std::abs(confirmed[i].time - expected[i]) < 0.01);
+        // Pulses 1-19 are reported as usual (19 reports); count what follows.
+        const auto after_change = std::span{reported}.subspan(19);
+        CHECK(after_change.size() == slower.size() + c.extra_reports);
+
+        for (const double real : slower) {
+            const bool covered =
+                std::ranges::any_of(after_change, [&](const reported_pulse& pulse) {
+                    return pulse.time <= real + 0.01 && real - pulse.time < gate_period / 2.0;
+                });
+            CAPTURE(real);
+            CHECK(covered);
         }
 
         for (std::size_t i = 1; i < reported.size(); ++i) {
-            CHECK(reported[i].time - reported[i - 1].time > gate_period * 0.5);
+            CHECK(reported[i].time - reported[i - 1].time >= gate_period / 2.0);
+        }
+
+        const auto confirmed = std::span{reported}.last(5);
+        const auto expected  = std::span{slower}.last(5);
+        for (std::size_t i = 0; i < confirmed.size(); ++i) {
+            CHECK(std::abs(confirmed[i].time - expected[i]) < 0.01);
         }
     }
+}
+
+TEST_CASE("a reset while the clock is stopped reports the new bar 0 as it happens")
+{
+    // The clock stops after pulse 19; a reset lands between grid slots 27 and 28. The next slot,
+    // 28, must be reported as index 0 starting a bar, by the reset input and by the command.
+    const auto   times      = steady(0.0, gate_period, 20);
+    const double reset_time = gate_period * 27.3;
+
+    const auto check = [&](const std::vector<reported_pulse>& reported,
+                           const std::vector<double>&         restarts) {
+        const auto slot_28 = std::ranges::find_if(reported, [&](const reported_pulse& pulse) {
+            return std::abs(pulse.time - (gate_period * 28.0)) < 0.01;
+        });
+        REQUIRE(slot_28 != reported.end());
+        CHECK(slot_28->index == 0);
+        CHECK(slot_28->starts_bar);
+        CHECK(std::next(slot_28)->index == 1);
+        CHECK(restarts.empty());  // shown as bar 0 when reported: no second bar signal
+    };
+
+    SUBCASE("reset input")
+    {
+        std::vector<edge> edges = pulses_at(times);
+        edges.push_back(edge{.time = reset_time, .type = clock_event_type::reset});
+
+        auto                audio_engine = make_engine(32);
+        std::vector<double> restarts;
+        const auto          reported =
+            run(*audio_engine, edges, static_cast<std::size_t>(gate_period * 32.0), 32, &restarts);
+        check(reported, restarts);
+    }
+
+    SUBCASE("reset_grid command")
+    {
+        auto                audio_engine = make_engine(32);
+        std::vector<double> restarts;
+        const auto          edges = pulses_at(times);
+
+        auto reported = run(*audio_engine,
+                            edges,
+                            static_cast<std::size_t>(reset_time) / 32 * 32,
+                            32,
+                            &restarts);
+        REQUIRE(audio_engine->post(command{.type = command_type::reset_grid}));
+        const auto rest =
+            run(*audio_engine, {}, static_cast<std::size_t>(gate_period * 5.0), 32, &restarts);
+        reported.insert(reported.end(), rest.begin(), rest.end());
+
+        check(reported, restarts);
+    }
+}
+
+TEST_CASE("a reset on a late edge whose prediction was already reported signals a bar restart")
+{
+    // Pulse 30 is predicted exactly at a block start and reported there. Its real edge arrives
+    // 40 samples late, in the next block, together with a reset. The pulse cannot be reported
+    // again, so the report must say the bar restarted, and numbering continues from 1.
+    std::vector<double> times = steady(0.0, gate_period, 40);
+    times[30] += 40.0;
+
+    std::vector<edge> edges = pulses_at(times);
+    edges.insert(edges.begin() + 31, edge{.time = times[30], .type = clock_event_type::reset});
+
+    auto                audio_engine = make_engine(32);
+    std::vector<double> restarts;
+    const auto          reported =
+        run(*audio_engine, edges, static_cast<std::size_t>(times.back()) + 10, 32, &restarts);
+
+    CHECK(restarts.size() == 1);
+
+    // The report nearest pulse 31's edge (its filtered time sits a few samples from the edge
+    // after the 40-sample excursion before it) carries index 1.
+    const auto pulse_31 = std::ranges::min_element(reported, {}, [&](const reported_pulse& pulse) {
+        return std::abs(pulse.time - times[31]);
+    });
+    REQUIRE(std::abs(pulse_31->time - times[31]) < gate_period / 4.0);
+    CHECK(pulse_31->index == 1);
+}
+
+TEST_CASE("a pulse exactly half a period after the last report is reported")
+{
+    // The clock stops after pulse 39 and returns exactly halfway between two grid slots. The
+    // returning pulse sits exactly on the edge of the reporting window, and must not be lost.
+    std::vector<double> times = steady(0.0, gate_period, 40);
+    const auto          later = steady(gate_period * 59.5, gate_period, 10);
+    times.insert(times.end(), later.begin(), later.end());
+
+    auto       audio_engine = make_engine(32);
+    const auto reported =
+        run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
+
+    CHECK(std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
+        return std::abs(pulse.time - (gate_period * 59.5)) < 0.01;
+    }));
+}
+
+TEST_CASE("a large first block reports every pulse")
+{
+    // A render-sized block holds the acquiring pulse and several more. Once the tempo is known,
+    // every pulse in the block is reported, the acquiring pulse included, rather than only the
+    // latest. Predictions follow the last real pulse until the final block ends.
+    const auto times = steady(100.0, 1'000.0, 12);  // 1,000-sample pulses: four per block
+
+    auto       audio_engine = make_engine(4'096);
+    const auto reported =
+        run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 4'096);
+
+    REQUIRE(reported.size() >= times.size());
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        CAPTURE(i);
+        CHECK(std::abs(reported[i].time - times[i]) < 0.01);
+        CHECK(reported[i].index == static_cast<std::int64_t>(i));
+    }
+    for (std::size_t i = times.size(); i < reported.size(); ++i) {
+        CHECK(reported[i].time > times.back());
+    }
+}
+
+TEST_CASE("the block size limit keeps every block's pulses within one report")
+{
+    // Pulses are at least 4 ms apart, and a report holds 32.
+    CHECK(engine::max_block_frames(sample_rate{48'000U}) == 6'144);
+    CHECK(engine::max_block_frames(sample_rate{96'000U}) == 12'288);
+    CHECK(engine::max_block_frames(sample_rate{8'000U}) == 1'024);
 }
 
 TEST_CASE("the sample clock never goes backwards")

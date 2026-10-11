@@ -124,6 +124,11 @@ private:
             }
         }
 
+        // A reset can make an already-reported pulse the start of bar 0.
+        if (report.bar_restarted) {
+            bar_flash_.trigger(flash_seconds);
+        }
+
         const bool green =
             report.state == clock_state::locked || report.state == clock_state::freewheeling;
         const bool red =

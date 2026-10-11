@@ -41,9 +41,17 @@ struct grid_pulse {
 };
 
 /// The clock grid after one block.
+///
+/// Guarantees for `pulses`:
+///   - reported pulses are always at least half a period apart: no bursts, no merged triggers
+///   - with a steady or jittery clock, resets, tempo increases, a stopped clock (freewheeling)
+///     and its return, every grid pulse is reported exactly once, with its final index
+///   - when the clock suddenly slows, the grid's predictions are reported before the slowdown
+///     can be known, so a few extra pulses may be reported during the transition; every real
+///     pulse is still reported (docs/learning/clock-tracking.md §8)
 struct clock_report {
-    /// At most this many grid pulses are reported per block. Pulses are at least 4 ms apart
-    /// (the double-trigger window), so a 4,096-frame block at 48 kHz holds at most 22.
+    /// At most this many grid pulses fit in one block's report. The engine accepts only block
+    /// sizes that cannot exceed it (engine::max_block_frames).
     static constexpr std::size_t max_pulses = 32;
 
     clock_state                        state{clock_state::no_clock};
@@ -51,6 +59,11 @@ struct clock_report {
     std::optional<std::int64_t>        bar;  // the bar containing the block's last frame
     std::array<grid_pulse, max_pulses> pulses{};
     std::size_t                        pulse_count{0};
+
+    /// A reset made bar 0 start at a pulse that is not reported here as index 0: it was already
+    /// reported under its old number, or it is too close to the last report to be reported again.
+    /// The bar indicator should restart now.
+    bool bar_restarted{false};
 };
 
 }  // namespace previously

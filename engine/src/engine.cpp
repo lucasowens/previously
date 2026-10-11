@@ -16,6 +16,15 @@ engine::engine(const engine_config& config) noexcept
 {
     expects(config.rate.hz() > 0U);
     expects(config.max_block_frames > 0U);
+    expects(config.max_block_frames <= max_block_frames(config.rate));
+}
+
+std::size_t engine::max_block_frames(sample_rate rate) noexcept
+{
+    const samples spacing = to_samples(clock_tracker::double_trigger_spacing, rate);
+
+    return static_cast<std::size_t>(std::max(spacing.value(), std::int64_t{1})) *
+           clock_report::max_pulses;
 }
 
 void engine::process(const audio_block& block, std::span<const clock_event> events) noexcept
@@ -109,7 +118,28 @@ void engine::report_clock(sample_time block_start, sample_time block_end) noexce
     clock_report_.state       = clock_tracker_.state();
     clock_report_.beat_period = clock_tracker_.beat_period();
     clock_report_.bar = clock_tracker_.bar_at_or_before(block_end - sample_time::from_ticks(1));
-    clock_report_.pulse_count = 0;
+    clock_report_.pulse_count   = 0;
+    clock_report_.bar_restarted = false;
+
+    // The rule: a grid pulse is reported once it lies at least half a period after the last
+    // report, using the period in force AT that report. Hysteresis by time, not index, because
+    // indices are relabelled by resets; and the period at the last report, because when the clock
+    // slows, the new longer period would hide the first real slow pulse inside the window.
+    const sample_time window = last_reported_pulse_ ? last_reported_period_ / 2 : sample_time{};
+    const sample_time reportable_from =
+        last_reported_pulse_ ? *last_reported_pulse_ + window : block_start;
+
+    // A reset that made bar 0 start at a pulse which will not be reported as index 0, because
+    // it was reported already under its old number or falls inside the window: say so once.
+    if (const std::uint32_t resets = clock_tracker_.resets_applied(); resets != resets_seen_) {
+        resets_seen_ = resets;
+
+        const auto bar_zero      = clock_tracker_.pulse_time(0);
+        const bool shown_as_zero = bar_zero && last_reported_bar_zero_ &&
+                                   abs(*bar_zero - *last_reported_bar_zero_) < window;
+
+        clock_report_.bar_restarted = bar_zero && *bar_zero < reportable_from && !shown_as_zero;
+    }
 
     const auto period = clock_tracker_.pulse_period();
 
@@ -117,28 +147,22 @@ void engine::report_clock(sample_time block_start, sample_time block_end) noexce
         return;
     }
 
-    // Report each grid pulse once: those up to the end of this block that lie more than half a
-    // period after the last one reported. The hysteresis is by time, not by pulse index, because
-    // indices are relabelled by a reset and rewound when a slowed clock retires its fill-ins,
-    // while a pulse's estimated time moves by less than half a period.
-    const sample_time not_before = last_reported_pulse_ ? *last_reported_pulse_ + (*period / 2)
-                                                        : block_start - sample_time::from_ticks(1);
-
-    const auto   before = clock_tracker_.pulse_at_or_before(not_before);
-    std::int64_t index  = before ? *before + 1 : clock_tracker_.latest_pulse().value_or(0);
+    std::array<grid_point, clock_report::max_pulses> found{};
+    const std::size_t                                count =
+        clock_tracker_.pulses_between(reportable_from - sample_time::from_ticks(1),
+                                      block_end,
+                                      found);
 
     const std::int64_t pulses_per_beat = clock_tracker_.pulses_per_beat();
     const std::int64_t pulses_per_bar  = clock_tracker_.pulses_per_bar();
 
-    // Bounded: one step per reportable pulse, plus one for a candidate inside the hysteresis.
-    for (std::size_t step = 0; step <= clock_report::max_pulses; ++step, ++index) {
-        const auto time = clock_tracker_.pulse_time(index);
+    for (std::size_t i = 0; i < count; ++i) {
+        const grid_point& point = found[i];
 
-        if (!time || *time >= block_end || clock_report_.pulse_count == clock_report::max_pulses) {
-            break;
-        }
-
-        if (*time <= not_before) {
+        // Pulses are at least half a period apart, so only the first can be inside the window
+        // of the last report from an earlier block; later ones are checked against this block's.
+        if (last_reported_pulse_ &&
+            point.time < *last_reported_pulse_ + (last_reported_period_ / 2)) {
             continue;
         }
 
@@ -146,14 +170,19 @@ void engine::report_clock(sample_time block_start, sample_time block_end) noexce
             // Never negative in practice: a pulse not yet reported lies at or after this block's
             // start (its prediction did), and a real edge correcting it is inside this block.
             // Clamped anyway, because an adapter turns the offset into an unsigned position.
-            .offset      = std::max(*time - block_start, sample_time{}),
-            .index       = index,
-            .starts_beat = floor_modulo(index, pulses_per_beat) == 0,
-            .starts_bar  = floor_modulo(index, pulses_per_bar) == 0,
+            .offset      = std::max(point.time - block_start, sample_time{}),
+            .index       = point.index,
+            .starts_beat = floor_modulo(point.index, pulses_per_beat) == 0,
+            .starts_bar  = floor_modulo(point.index, pulses_per_bar) == 0,
         };
-
         ++clock_report_.pulse_count;
-        last_reported_pulse_ = *time;
+
+        last_reported_pulse_  = point.time;
+        last_reported_period_ = *period;
+
+        if (point.index == 0) {
+            last_reported_bar_zero_ = point.time;
+        }
     }
 }
 

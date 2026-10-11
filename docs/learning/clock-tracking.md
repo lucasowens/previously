@@ -277,27 +277,52 @@ edge can interpolate back across a block boundary, into a block that has already
 It is placed at the new block's first frame instead: an error under one sample, and only for
 slewed edges.
 
-### Out: reporting each grid pulse exactly once
+### Out: reporting each grid pulse
 
 After each block the engine reports the grid pulses that fell inside it. The adapter turns them
-into clock-out triggers and beat lights. The hard requirement is **each pulse exactly once**, and
-the obvious approaches fail it:
+into clock-out triggers and beat lights.
 
-- **By pulse index fails.** A reset relabels indices: pulse 37 becomes pulse 0, and the next 37
-  pulses would look like repeats. A slowed clock retires fill-ins that were already reported.
-- **By "time inside this block" fails.** A pulse's estimated time moves as real edges correct it,
-  and can cross a block boundary, being reported twice or never.
+My first version promised "each pulse exactly once", and a review on PR #2 showed where that
+failed. The guarantee is now stated exactly as the code meets it:
 
-What works is **time with hysteresis**: report each grid pulse up to the end of the block that is
-more than **half a period** after the last pulse reported. Estimates move by less than half a
-period (a correction is at most a quarter), so a pulse can't be reported twice. Real new pulses
-are a whole period apart, so none is skipped. Tests check this across:
+> **Reported pulses are never closer than half a period.** Every real pulse is reported. With
+> steady or jittery clocks, resets, tempo increases, a stopped clock and its return, every grid
+> pulse is reported **exactly once**, with its final index.
 
-- every block size from 1 to 48
-- ±40-sample jitter
-- freewheeling and returning at ±0.4 of a period
-- resets
-- tempo doubling and slowing to a third
+**How it works:**
+
+- **Hysteresis by time.** A grid pulse is reported once it lies at least half a period after the
+  last pulse reported. "At least" matters: a pulse exactly on the boundary used to be dropped.
+- **Why not by index.** Indices get relabelled: a reset turns pulse 37 into pulse 0, and a slowed
+  clock retires fill-ins that were already reported.
+- **The half period is the one in force at the last report,** not the current one. When the clock
+  slows, the new, longer period would otherwise hide the first real slow pulse inside the window,
+  and a real pulse would get no trigger.
+- **Labels come from the tracker.** `clock_tracker::pulses_between()` returns recorded pulses then
+  predicted ones, already labelled the way they *will* be. A prediction at or after a pending
+  reset is already numbered 0, so a reset while the clock is stopped is reported as bar 0 when it
+  happens.
+- **`bar_restarted`.** A reset can arrive after its pulse was reported (a late edge whose
+  prediction already went out). Reports can't be taken back, so the report raises `bar_restarted`
+  instead, and the bar light uses it. It isn't raised when that pulse was already reported as 0.
+
+**The one inherent exception: sudden slowdowns.** The grid predicts at the old tempo, and a
+prediction goes out before anyone can know the real pulse will be late. Every real pulse is still
+reported, at its time or covered by a prediction less than half an old period before it, and
+reports follow the real pulses one for one once the slowdown is confirmed. The extra predicted
+reports during the transition are pinned by a test:
+
+| Slowdown | Extra reports | Why |
+|---|---|---|
+| 1.5×, 2× | 1 | The next prediction goes out, then the real pulse |
+| 2.2× | 1 | Two predictions; the second stands in for the real pulse, 0.2 periods early |
+| 2.5× | 2 | Two predictions, then the real pulse |
+| 3× | 4 | The clock looks stopped for two gaps, so predictions keep clock out running until the second real pulse confirms the slowdown |
+| 4× | 6 | As for 3×, over longer gaps |
+
+The alternative rule (the current period) produces fewer extras, but it gives some *real*
+pulses no trigger at all. A downbeat from the master clock with no clock out is the worse
+failure.
 
 The adapter then plays each reported pulse as a 1 ms trigger **one block later, at the same
 offset**: the same one-block latency the audio has, so clock out stays aligned with the sound.

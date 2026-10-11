@@ -584,8 +584,13 @@ confidence, but nothing performance-critical depends on it.
     with sub-sample precision, in time order.
   - After each block, `clock()` reports the grid:
     - lock state, beat period and current bar
-    - every grid pulse that fell in the block (offset, index, beat and bar flags), each exactly
-      once. Adapters use them for clock out and the lights.
+    - the grid pulses that fell in the block (offset, index, beat and bar flags), never closer
+      than half a period. Exactly once with steady or jittery clocks, resets, tempo increases,
+      a stopped clock and its return. During a sudden slowdown, predicted pulses can be reported
+      before the slowdown is known (a pinned number of extras); every real pulse is still
+      reported.
+    - `bar_restarted` when a reset makes an already-reported pulse bar 0.
+    - Adapters use these for clock out and the lights.
   - The engine's sample clock never goes backwards; all timestamps are measured against it.
   - Commands (from UI, MIDI or tests) arrive through a **lock-free
     single-producer/single-consumer queue** and are applied at the start of the next block,

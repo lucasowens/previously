@@ -16,6 +16,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 
@@ -36,6 +37,10 @@ public:
     static constexpr std::size_t clock_history_pulses = std::size_t{16} * 4 * 24;
 
     explicit engine(const engine_config& config) noexcept;
+
+    /// The largest block whose grid pulses always fit in one clock_report: pulses are at least
+    /// clock_tracker::double_trigger_spacing apart. 6,144 frames at 48 kHz.
+    [[nodiscard]] static std::size_t max_block_frames(sample_rate rate) noexcept;
 
     /// Audio thread. Applies pending commands, feeds the block's clock events to the grid, then
     /// processes the audio. Events must be in time order with offsets inside the block.
@@ -68,9 +73,11 @@ private:
     clock_tracker                                 clock_tracker_;
     clock_report                                  clock_report_;
 
-    // The time of the last grid pulse reported, so each pulse is reported exactly once even when
-    // its estimated time moves across a block boundary (see report_clock()).
+    // What report_clock() has already said, so it never says it twice (see report_clock()).
     std::optional<sample_time> last_reported_pulse_;
+    sample_time                last_reported_period_;
+    std::optional<sample_time> last_reported_bar_zero_;
+    std::uint32_t              resets_seen_{0};
 };
 
 }  // namespace previously
