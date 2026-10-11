@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <random>
 #include <span>
 #include <vector>
@@ -52,11 +53,18 @@ struct edge {
 
 /// Runs the engine for `total_frames`, in blocks of `block_frames`, delivering each edge in the
 /// block that contains it. Returns every reported grid pulse with its absolute time.
-[[nodiscard]] std::vector<reported_pulse> run(engine&               target,
-                                              std::span<const edge> edges,
-                                              std::size_t           total_frames,
-                                              std::size_t           block_frames,
-                                              std::vector<double>*  bar_restarts = nullptr)
+/// The bar reported at the end of one block.
+struct block_bar {
+    double                      block_start{0.0};
+    std::optional<std::int64_t> bar;
+};
+
+[[nodiscard]] std::vector<reported_pulse> run(engine&                 target,
+                                              std::span<const edge>   edges,
+                                              std::size_t             total_frames,
+                                              std::size_t             block_frames,
+                                              std::vector<double>*    bar_restarts = nullptr,
+                                              std::vector<block_bar>* bars         = nullptr)
 {
     std::vector<reported_pulse> reported;
     std::vector<float>          silence(block_frames, 0.0F);
@@ -94,6 +102,10 @@ struct edge {
         if (report.pulse_count > 0 && report.bar) {
             const grid_pulse& last = report.pulses[report.pulse_count - 1];
             CHECK(*report.bar == floor_divide(last.index, 16));
+        }
+
+        if (bars != nullptr) {
+            bars->push_back(block_bar{.block_start = block_start, .bar = report.bar});
         }
 
         if (report.bar_restarted && bar_restarts != nullptr) {
@@ -435,6 +447,39 @@ TEST_CASE("a reset while the clock is stopped reports the new bar 0 as it happen
         reported.insert(reported.end(), rest.begin(), rest.end());
 
         check(reported, restarts);
+    }
+}
+
+TEST_CASE("while a reset is pending the bar reads -1, then 0 from the claimed pulse")
+{
+    // The clock stopped after pulse 19 (bar 1 runs from pulse 16 to 31). A reset at 27.3
+    // periods claims slot 28. Until the reset, the bar is 1; from the reset to slot 28, the
+    // pulses before the new bar 0 are numbered -1 and so is their bar; from slot 28 on, bar 0.
+    std::vector<edge> edges = pulses_at(steady(0.0, gate_period, 20));
+    edges.push_back(edge{.time = gate_period * 27.3, .type = clock_event_type::reset});
+
+    auto                   audio_engine = make_engine(32);
+    std::vector<block_bar> bars;
+    static_cast<void>(run(*audio_engine,
+                          edges,
+                          static_cast<std::size_t>(gate_period * 30.0),
+                          32,
+                          nullptr,
+                          &bars));
+
+    for (const block_bar& block : bars) {
+        const double block_end = block.block_start + 32.0;
+
+        CAPTURE(block.block_start);
+        if (block_end > gate_period * 16.0 && block_end <= gate_period * 27.3) {
+            CHECK(block.bar == 1);
+        }
+        else if (block.block_start >= gate_period * 27.3 && block_end <= gate_period * 28.0) {
+            CHECK(block.bar == -1);
+        }
+        else if (block.block_start >= gate_period * 28.0) {
+            CHECK(block.bar == 0);
+        }
     }
 }
 

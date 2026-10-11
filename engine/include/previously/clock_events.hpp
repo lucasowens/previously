@@ -59,9 +59,12 @@ struct clock_report {
     /// sizes that cannot exceed it (engine::max_block_frames).
     static constexpr std::size_t max_pulses = 32;
 
-    clock_state                        state{clock_state::no_clock};
-    std::optional<sample_time>         beat_period;
-    std::optional<std::int64_t>        bar;  // the bar containing the block's last frame
+    clock_state                state{clock_state::no_clock};
+    std::optional<sample_time> beat_period;
+    /// The bar containing the block's last frame. While a reset is pending it is numbered as it
+    /// will be once the reset applies, so between the reset and the pulse it claims, the bar
+    /// before the new bar 0 reads -1. Those pulses keep bar -1 afterwards.
+    std::optional<std::int64_t>        bar;
     std::array<grid_pulse, max_pulses> pulses{};
     std::size_t                        pulse_count{0};
 

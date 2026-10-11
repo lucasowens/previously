@@ -149,8 +149,10 @@ void engine::report_clock(sample_time block_start, sample_time block_end) noexce
         return;
     }
 
-    std::array<grid_point, clock_report::max_pulses> found{};
-    const std::size_t                                count =
+    // One extra: the first point found can be inside the window of the previous block's last
+    // report and be skipped, and that must not cost a reportable pulse its place.
+    std::array<grid_point, clock_report::max_pulses + 1> found{};
+    const std::size_t                                    count =
         clock_tracker_.pulses_between(reportable_from - sample_time::from_ticks(1),
                                       block_end,
                                       found);
@@ -158,7 +160,8 @@ void engine::report_clock(sample_time block_start, sample_time block_end) noexce
     const std::int64_t pulses_per_beat = clock_tracker_.pulses_per_beat();
     const std::int64_t pulses_per_bar  = clock_tracker_.pulses_per_bar();
 
-    for (std::size_t i = 0; i < count; ++i) {
+    for (std::size_t i = 0; i < count && clock_report_.pulse_count < clock_report::max_pulses;
+         ++i) {
         const grid_point& point = found[i];
 
         // Pulses are at least half a period apart, so only the first can be inside the window
