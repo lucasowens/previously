@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Previously pre-commit gate: formatting must be exact and the host tests must pass.
+# Installed by `make hooks`. The full gate (clang-tidy, cppcheck, Rack, firmware) runs in CI.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+tools/scripts/format.sh --check
+make --no-print-directory quick > /dev/null
+
+echo "pre-commit: format and host tests passed"

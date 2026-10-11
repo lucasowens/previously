@@ -1,0 +1,27 @@
+{
+  "editor.formatOnSave": true,
+  "editor.rulers": [100],
+  "editor.insertSpaces": true,
+  "editor.tabSize": 4,
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "[cpp]": {
+    "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd"
+  },
+  "C_Cpp.intelliSenseEngine": "disabled",
+  "clangd.path": "/opt/homebrew/opt/llvm/bin/clangd",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/dev",
+    "--clang-tidy",
+    "--header-insertion=never"
+  ],
+  "cmake.useCMakePresets": "always",
+  "files.exclude": {
+    "**/.cache": true
+  },
+  "search.exclude": {
+    "vendor/**": true,
+    ".deps/**": true,
+    "build/**": true
+  }
+}

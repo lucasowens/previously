@@ -1,0 +1,20 @@
+# Build output
+/build/
+/rack/build/
+/rack/dist/
+/rack/*.dylib
+/rack/*.so
+/rack/*.dll
+/firmware/build/
+
+# Fetched SDKs
+/.deps/
+
+# Editors and OS (the shared .vscode/ settings are tracked)
+.DS_Store
+.cache/
+compile_commands.json
+
+# Test artefacts (goldens under tests/golden are tracked)
+/tests/golden/out/
+/rack/LICENSE

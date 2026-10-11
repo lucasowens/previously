@@ -1,0 +1,83 @@
+# Previously code style — the single source of truth for formatting.
+# Rationale for each choice lives in docs/CODING_STANDARD.md (§2 Formatting).
+# Pinned to clang-format 23; CI fails on any diff.
+---
+Language:                                  Cpp
+BasedOnStyle:                              LLVM
+Standard:                                  c++20
+
+# Layout
+ColumnLimit:                               100
+IndentWidth:                               4
+TabWidth:                                  4
+UseTab:                                    Never
+ContinuationIndentWidth:                   4
+AccessModifierOffset:                      -4
+IndentCaseLabels:                          true
+NamespaceIndentation:                      None
+FixNamespaceComments:                      true
+CompactNamespaces:                         false
+SpacesBeforeTrailingComments:              2
+
+# Braces: Stroustrup (function bodies open on their own line; control flow is K&R)
+BreakBeforeBraces:                         Stroustrup
+InsertBraces:                              true
+RemoveBracesLLVM:                          false
+
+# Never squeeze logic onto one line
+AllowShortFunctionsOnASingleLine:          Empty
+AllowShortIfStatementsOnASingleLine:       Never
+AllowShortLoopsOnASingleLine:              false
+AllowShortBlocksOnASingleLine:             Never
+AllowShortCaseLabelsOnASingleLine:         false
+AllowShortEnumsOnASingleLine:              false
+AllowShortLambdasOnASingleLine:            Empty
+
+# Arguments and parameters: all on one line, or one per line
+AlignAfterOpenBracket:                     Align
+BinPackArguments:                          false
+BinPackParameters:                         OnePerLine
+AllowAllArgumentsOnNextLine:               false
+AllowAllParametersOfDeclarationOnNextLine: false
+BreakConstructorInitializers:              BeforeColon
+PackConstructorInitializers:               Never
+BreakTemplateDeclarations:                 Yes
+RequiresClausePosition:                    OwnLine
+
+# Alignment: related lines read as a table
+AlignConsecutiveAssignments:               Consecutive
+AlignConsecutiveDeclarations:              Consecutive
+AlignConsecutiveMacros:                    Consecutive
+AlignConsecutiveBitFields:                 Consecutive
+AlignTrailingComments:                     Always
+AlignOperands:                             Align
+AlignEscapedNewlines:                      Left
+
+# Pointers and references bind to the type: float* p, const T& x
+DerivePointerAlignment:                    false
+PointerAlignment:                          Left
+ReferenceAlignment:                        Left
+
+# Vertical rhythm: one blank line between definitions and logical blocks, never more
+SeparateDefinitionBlocks:                  Always
+MaxEmptyLinesToKeep:                       1
+KeepEmptyLines:
+  AtEndOfFile:                             false
+  AtStartOfBlock:                          false
+  AtStartOfFile:                           false
+EmptyLineBeforeAccessModifier:             LogicalBlock
+EmptyLineAfterAccessModifier:              Never
+InsertNewlineAtEOF:                        true
+
+# Includes: main header, then own project, then local, then third-party, then std
+SortIncludes:                              CaseSensitive
+IncludeBlocks:                             Regroup
+IncludeCategories:
+  - Regex:                                 '^"previously/'
+    Priority:                              2
+  - Regex:                                 '^"'
+    Priority:                              3
+  - Regex:                                 '^<(doctest|daisy|daisysp|rack|arm_math|plugin)'
+    Priority:                              4
+  - Regex:                                 '^<'
+    Priority:                              5

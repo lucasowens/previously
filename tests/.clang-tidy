@@ -1,0 +1,23 @@
+# Test-only relaxations on top of the project profile. Each one is something tests do on purpose.
+---
+InheritParentConfig: true
+
+Checks: >
+  -bugprone-random-generator-seed,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-no-malloc,
+  -cppcoreguidelines-owning-memory,
+  -readability-inconsistent-declaration-parameter-name,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-macro-usage
+
+# bugprone-random-generator-seed
+#     Fixed seeds are the point: test signals must be identical on every run.
+# cppcoreguidelines-avoid-non-const-global-variables
+#     The realtime guard's state is thread_local by design.
+# cppcoreguidelines-no-malloc, cppcoreguidelines-owning-memory
+#     The replacement operator new/delete must use malloc/free.
+# readability-inconsistent-declaration-parameter-name
+#     Our operator new/delete parameter names differ from libc++'s reserved __names.
+# cppcoreguidelines-avoid-do-while, cppcoreguidelines-macro-usage
+#     doctest's CHECK/REQUIRE macros expand to do-while blocks.

@@ -1,0 +1,77 @@
+# Previously static analysis profile.
+# Every enabled check is an error. Disabled checks are listed with the reason.
+# Rationale for the rules lives in docs/CODING_STANDARD.md (§4 Static analysis).
+---
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -cppcoreguidelines-pro-bounds-constant-array-index,
+  -misc-include-cleaner,
+  -modernize-use-trailing-return-type,
+  -portability-avoid-pragma-once,
+  -readability-identifier-length,
+  -readability-magic-numbers
+
+# Disabled, with reasons:
+#   bugprone-easily-swappable-parameters
+#       Strong unit types (previously::samples, previously::seconds, ...) do this job at compile time.
+#   cppcoreguidelines-avoid-magic-numbers, readability-magic-numbers
+#       DSP is full of legitimate literal coefficients. Named constexpr values are enforced
+#       in review (CODING_STANDARD §3.6) instead.
+#   cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+#   cppcoreguidelines-pro-bounds-constant-array-index
+#       Both push towards .at() / gsl::at, which throw; the embedded subset has no exceptions.
+#       Bounds are carried by std::span, checked by expects() contracts, and verified by ASan.
+#   misc-include-cleaner
+#       Too noisy with the standard library on libc++. Includes are kept tidy by review.
+#   modernize-use-trailing-return-type
+#       Style choice: conventional return types read more like the rest of the code.
+#   portability-avoid-pragma-once
+#       #pragma once is supported by every compiler we target (GCC, Clang, MSVC) and cannot
+#       collide the way hand-written include guard names can (CODING_STANDARD §2.6).
+#   readability-identifier-length
+#       i, n, x are idiomatic in DSP loops.
+
+WarningsAsErrors:  '*'
+HeaderFilterRegex: '.*/(engine|tests|tools|rack/src|firmware/src)/.*'
+FormatStyle:       file
+
+CheckOptions:
+  # C++ Core Guidelines naming (NL.10): snake_case everywhere, CamelCase template parameters.
+  - { key: readability-identifier-naming.NamespaceCase,          value: lower_case }
+  - { key: readability-identifier-naming.ClassCase,              value: lower_case }
+  - { key: readability-identifier-naming.StructCase,             value: lower_case }
+  - { key: readability-identifier-naming.UnionCase,              value: lower_case }
+  - { key: readability-identifier-naming.EnumCase,               value: lower_case }
+  - { key: readability-identifier-naming.EnumConstantCase,       value: lower_case }
+  - { key: readability-identifier-naming.FunctionCase,           value: lower_case }
+  - { key: readability-identifier-naming.MethodCase,             value: lower_case }
+  - { key: readability-identifier-naming.VariableCase,           value: lower_case }
+  - { key: readability-identifier-naming.ParameterCase,          value: lower_case }
+  - { key: readability-identifier-naming.MemberCase,             value: lower_case }
+  - { key: readability-identifier-naming.PrivateMemberSuffix,    value: _ }
+  - { key: readability-identifier-naming.ProtectedMemberSuffix,  value: _ }
+  - { key: readability-identifier-naming.ConstexprVariableCase,  value: lower_case }
+  - { key: readability-identifier-naming.GlobalConstantCase,     value: lower_case }
+  - { key: readability-identifier-naming.TypeAliasCase,          value: lower_case }
+  - { key: readability-identifier-naming.TypedefCase,            value: lower_case }
+  - { key: readability-identifier-naming.ConceptCase,            value: lower_case }
+  - { key: readability-identifier-naming.TemplateParameterCase,  value: CamelCase }
+  - { key: readability-identifier-naming.MacroDefinitionCase,    value: UPPER_CASE }
+
+  # Plain aggregates (all-public structs) are fine; classes keep their state private.
+  - { key: misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }
+  - { key: cppcoreguidelines-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic, value: true }
+
+  # Literal suffixes are upper case: 0.5F, 48000U.
+  - { key: readability-uppercase-literal-suffix.NewSuffixes, value: 'F;U;L;UL;LL;ULL' }

@@ -1,0 +1,10 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "test (full host gate)", "type": "shell", "command": "make test", "group": "test", "problemMatcher": ["$gcc"] },
+    { "label": "quick (build + tests)", "type": "shell", "command": "make quick", "group": { "kind": "build", "isDefault": true }, "problemMatcher": ["$gcc"] },
+    { "label": "lint", "type": "shell", "command": "make lint", "problemMatcher": ["$gcc"] },
+    { "label": "rack plugin", "type": "shell", "command": "make rack", "problemMatcher": ["$gcc"] },
+    { "label": "firmware", "type": "shell", "command": "make firmware", "problemMatcher": ["$gcc"] }
+  ]
+}

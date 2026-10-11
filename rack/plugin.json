@@ -1,0 +1,27 @@
+{
+  "slug": "Infinitedecay",
+  "name": "Infinitedecay",
+  "version": "2.0.0",
+  "license": "GPL-3.0-or-later",
+  "brand": "Infinitedecay",
+  "author": "Lucas Owens",
+  "authorEmail": "",
+  "authorUrl": "https://infinitedecay.com",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "https://github.com/lucasowens/previously",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "Previously",
+      "name": "Previously",
+      "description": "Clock-locked stereo looper with retrospective capture (development build of the Previously Eurorack module)",
+      "tags": [
+        "Sampler",
+        "Recording",
+        "Effect"
+      ]
+    }
+  ]
+}

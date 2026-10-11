@@ -1,0 +1,74 @@
+# Previously CI — host tiers T0–T4 on every push and pull request.
+# Device tiers (T5–T7) run on the self-hosted rig runner once it exists (DESIGN.md §12).
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ARM_TOOLCHAIN: "15.2.Rel1"
+
+jobs:
+  # The reference environment: same OS and Homebrew tools as local development.
+  # Runs the complete host gate, including lint, the Rack plugin and the firmware.
+  macos-gate:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: brew install llvm cppcheck ninja jq zstd
+
+      - name: Install Arm GNU toolchain
+        uses: carlosperate/arm-none-eabi-gcc-action@v1
+        with:
+          release: ${{ env.ARM_TOOLCHAIN }}
+
+      - name: Fetch Rack SDK
+        run: tools/scripts/fetch-rack-sdk.sh
+
+      - name: Host gate (format, build, tests, clang-tidy, cppcheck, rack, firmware)
+        run: make test
+
+  # Portability: the engine and tests must also build and pass with GCC and Clang on Linux.
+  linux-portability:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler:
+          - { cc: gcc-14, cxx: g++-14 }
+          - { cc: clang-18, cxx: clang++-18 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y ninja-build g++-14 clang-18
+
+      - name: Build and test (ASan + UBSan)
+        env:
+          CC: ${{ matrix.compiler.cc }}
+          CXX: ${{ matrix.compiler.cxx }}
+        run: |
+          cmake --preset dev
+          cmake --build --preset dev
+          ctest --preset dev
+
+      - name: Rack plugin (Linux SDK)
+        if: matrix.compiler.cc == 'gcc-14'
+        env:
+          CC: ${{ matrix.compiler.cc }}
+          CXX: ${{ matrix.compiler.cxx }}
+        run: |
+          sudo apt-get install -y jq zstd
+          make rack
