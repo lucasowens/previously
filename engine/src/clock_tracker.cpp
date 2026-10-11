@@ -236,7 +236,7 @@ std::optional<std::int64_t> clock_tracker::latest_pulse() const noexcept
         return std::nullopt;
     }
 
-    return latest_sequence_ - index_offset_;
+    return latest_sequence_ - effective_offset();
 }
 
 std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const noexcept
@@ -247,7 +247,7 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
         return std::nullopt;
     }
 
-    const std::int64_t sequence = index + index_offset_;
+    const std::int64_t sequence = index + effective_offset();
 
     if (sequence <= latest_sequence_) {
         if (sequence < oldest_sequence()) {
@@ -269,7 +269,7 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
 std::optional<std::int64_t> clock_tracker::pulse_at_or_before(sample_time when) const noexcept
 {
     if (const auto sequence = sequence_at_or_before(when)) {
-        return *sequence - index_offset_;
+        return *sequence - effective_offset();
     }
 
     return std::nullopt;
@@ -441,6 +441,27 @@ void clock_tracker::relabel(std::int64_t sequence_of_bar_zero) noexcept
     ++resets_applied_;
 }
 
+std::int64_t clock_tracker::effective_offset() const noexcept
+{
+    // While a reset is pending, every index is labelled as it will be once the reset applies:
+    // the first pulse at or after it is 0, and earlier pulses count back from -1. One view for
+    // every query, so a pulse is never announced under a number it is about to lose, and the
+    // bar number agrees with the pulse labels. The slot is computed with the same arithmetic as
+    // fill_in_closed_slots() and apply_pending_reset(), so a prediction labelled 0 here is the
+    // pulse the reset will claim.
+    if (pending_reset_ && latest_sequence_ >= 0) {
+        if (const auto period = pulse_period()) {
+            const std::int64_t slots_ahead =
+                ceil_divide((*pending_reset_ - reset_window_ - latest_time()).ticks(),
+                            period->ticks());
+
+            return latest_sequence_ + std::max<std::int64_t>(1, slots_ahead);
+        }
+    }
+
+    return index_offset_;
+}
+
 std::uint32_t clock_tracker::resets_applied() const noexcept
 {
     return resets_applied_;
@@ -456,6 +477,9 @@ std::size_t clock_tracker::pulses_between(sample_time           after,
         return written;
     }
 
+    // One labelling for the whole call (see effective_offset()).
+    const std::int64_t offset = effective_offset();
+
     // Recorded pulses: from the first one after `after`, up to the latest.
     const auto   at_or_before = sequence_at_or_before(after);
     std::int64_t sequence     = at_or_before ? *at_or_before + 1 : oldest_sequence();
@@ -467,28 +491,15 @@ std::size_t clock_tracker::pulses_between(sample_time           after,
             return written;
         }
 
-        out[written] = grid_point{.time = time, .index = sequence - index_offset_};
+        out[written] = grid_point{.time = time, .index = sequence - offset};
         ++written;
     }
 
-    // Predicted pulses, once the tempo is known. A pending reset will label the first pulse at
-    // or after it as 0; label the predictions the same way now, so a reporter never announces a
-    // pulse under a number it is about to lose.
+    // Predicted pulses, once the tempo is known.
     const auto period = pulse_period();
 
     if (!period) {
         return written;
-    }
-
-    // The first predicted pulse a pending reset will claim, computed from the grid rather than
-    // found while iterating, so it is right even when that pulse lies before `after`.
-    std::optional<std::int64_t> bar_zero_sequence;
-
-    if (pending_reset_) {
-        const std::int64_t slots_ahead =
-            ceil_divide((*pending_reset_ - reset_window_ - latest_time()).ticks(), period->ticks());
-
-        bar_zero_sequence = latest_sequence_ + std::max<std::int64_t>(1, slots_ahead);
     }
 
     for (; written < out.size(); ++sequence) {
@@ -497,9 +508,6 @@ std::size_t clock_tracker::pulses_between(sample_time           after,
         if (time >= before) {
             return written;
         }
-
-        const bool         claimed_by_reset = bar_zero_sequence && sequence >= *bar_zero_sequence;
-        const std::int64_t offset           = claimed_by_reset ? *bar_zero_sequence : index_offset_;
 
         if (time > after) {
             out[written] = grid_point{.time = time, .index = sequence - offset};

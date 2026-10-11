@@ -45,3 +45,12 @@ add_custom_target(bless
     DEPENDS previously_render
     COMMENT "Approving current render output as the new golden reference"
 )
+
+# The render tool refuses a block size the engine cannot take at the file's sample rate, with a
+# clear message instead of an engine contract violation.
+add_test(NAME render_rejects_oversized_block
+    COMMAND ${CMAKE_COMMAND}
+            -DRENDER=$<TARGET_FILE:previously_render>
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/render_limits
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/render_limits.cmake
+)

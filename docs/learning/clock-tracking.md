@@ -285,7 +285,9 @@ into clock-out triggers and beat lights.
 My first version promised "each pulse exactly once", and a review on PR #2 showed where that
 failed. The guarantee is now stated exactly as the code meets it:
 
-> **Reported pulses are never closer than half a period.** Every real pulse is reported. With
+> **Reported pulses are never closer than half a period** (the period in force at the previous
+> report). **Every real pulse is covered**: reported at its time, or stood in for by a prediction
+> less than half a period before it. With
 > steady or jittery clocks, resets, tempo increases, a stopped clock and its return, every grid
 > pulse is reported **exactly once**, with its final index.
 
@@ -319,6 +321,9 @@ reports during the transition are pinned by a test:
 | 2.5× | 2 | Two predictions, then the real pulse |
 | 3× | 4 | The clock looks stopped for two gaps, so predictions keep clock out running until the second real pulse confirms the slowdown |
 | 4× | 6 | As for 3×, over longer gaps |
+
+A single pulse late by a quarter to a half period, then back on the grid, gives one extra report
+too. That one comes from the tracker treating it as two tempo changes, tracked in issue #3.
 
 The alternative rule (the current period) produces fewer extras, but it gives some *real*
 pulses no trigger at all. A downbeat from the master clock with no clock out is the worse

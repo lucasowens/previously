@@ -89,6 +89,13 @@ struct edge {
 
         const clock_report& report = target.clock();
 
+        // The bar number and the pulse labels describe the same grid: the last pulse reported in
+        // a block is in the bar that contains the block's end.
+        if (report.pulse_count > 0 && report.bar) {
+            const grid_pulse& last = report.pulses[report.pulse_count - 1];
+            CHECK(*report.bar == floor_divide(last.index, 16));
+        }
+
         if (report.bar_restarted && bar_restarts != nullptr) {
             bar_restarts->push_back(block_start);
         }
@@ -357,6 +364,29 @@ TEST_CASE("a sudden slowdown reports every real pulse; the transition is pinned"
     }
 }
 
+TEST_CASE("a single late pulse gives one extra report (pinned; see issue #3)")
+{
+    // Pulse 20 arrives a third of a period late, then the clock is back on the grid. The
+    // tracker's quarter-period rule treats that as two tempo changes (issue #3), and the reporter
+    // emits one extra pulse. Pinned so the number is known, and so fixing #3 shows up here.
+    std::vector<double> times = steady(0.0, gate_period, 40);
+    times[20] += gate_period / 3.0;
+
+    auto       audio_engine = make_engine(32);
+    const auto reported =
+        run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
+
+    CHECK(reported.size() == (times.size() - 1) + 1);
+
+    for (std::size_t i = 21; i < times.size(); ++i) {
+        const bool covered = std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
+            return std::abs(pulse.time - times[i]) < gate_period / 2.0;
+        });
+        CAPTURE(i);
+        CHECK(covered);
+    }
+}
+
 TEST_CASE("a reset while the clock is stopped reports the new bar 0 as it happens")
 {
     // The clock stops after pulse 19; a reset lands between grid slots 27 and 28. The next slot,
@@ -457,11 +487,11 @@ TEST_CASE("a large first block reports every pulse")
     // A render-sized block holds the acquiring pulse and several more. Once the tempo is known,
     // every pulse in the block is reported, the acquiring pulse included, rather than only the
     // latest. Predictions follow the last real pulse until the final block ends.
-    const auto times = steady(100.0, 1'000.0, 12);  // 1,000-sample pulses: four per block
+    const auto times = steady(100.0, 1'000.0, 12);  // 1,000-sample pulses: three per block
 
-    auto       audio_engine = make_engine(4'096);
+    auto       audio_engine = make_engine(3'072);
     const auto reported =
-        run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 4'096);
+        run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 3'072);
 
     REQUIRE(reported.size() >= times.size());
     for (std::size_t i = 0; i < times.size(); ++i) {
@@ -476,10 +506,11 @@ TEST_CASE("a large first block reports every pulse")
 
 TEST_CASE("the block size limit keeps every block's pulses within one report")
 {
-    // Pulses are at least 4 ms apart, and a report holds 32.
-    CHECK(engine::max_block_frames(sample_rate{48'000U}) == 6'144);
-    CHECK(engine::max_block_frames(sample_rate{96'000U}) == 12'288);
-    CHECK(engine::max_block_frames(sample_rate{8'000U}) == 1'024);
+    // Real pulses are at least 4 ms apart, but during a tempo transition reports can be half a
+    // period apart: at worst 2 ms. A report holds 32.
+    CHECK(engine::max_block_frames(sample_rate{48'000U}) == 3'072);
+    CHECK(engine::max_block_frames(sample_rate{96'000U}) == 6'144);
+    CHECK(engine::max_block_frames(sample_rate{8'000U}) == 512);
 }
 
 TEST_CASE("the sample clock never goes backwards")

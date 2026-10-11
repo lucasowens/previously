@@ -38,8 +38,8 @@ public:
 
     explicit engine(const engine_config& config) noexcept;
 
-    /// The largest block whose grid pulses always fit in one clock_report: pulses are at least
-    /// clock_tracker::double_trigger_spacing apart. 6,144 frames at 48 kHz.
+    /// The largest block whose grid pulses always fit in one clock_report: reports are at least
+    /// half of clock_tracker::double_trigger_spacing apart. 3,072 frames at 48 kHz.
     [[nodiscard]] static std::size_t max_block_frames(sample_rate rate) noexcept;
 
     /// Audio thread. Applies pending commands, feeds the block's clock events to the grid, then

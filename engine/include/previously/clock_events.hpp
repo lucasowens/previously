@@ -43,12 +43,17 @@ struct grid_pulse {
 /// The clock grid after one block.
 ///
 /// Guarantees for `pulses`:
-///   - reported pulses are always at least half a period apart: no bursts, no merged triggers
+///   - reported pulses are never closer than half the period in force at the previous report:
+///     no bursts, no merged triggers
+///   - every real pulse is covered: reported at its time, or stood in for by a prediction less
+///     than half a period before it
 ///   - with a steady or jittery clock, resets, tempo increases, a stopped clock (freewheeling)
 ///     and its return, every grid pulse is reported exactly once, with its final index
-///   - when the clock suddenly slows, the grid's predictions are reported before the slowdown
-///     can be known, so a few extra pulses may be reported during the transition; every real
-///     pulse is still reported (docs/learning/clock-tracking.md §8)
+///   - when the clock suddenly slows, predictions go out before the slowdown can be known, so a
+///     pinned number of extra pulses is reported during the transition
+///     (docs/learning/clock-tracking.md §8)
+///   - pulse 0 is reported only if the tempo becomes known in the same block, i.e. pulse 1
+///     arrives in that block too; otherwise reporting starts at pulse 1
 struct clock_report {
     /// At most this many grid pulses fit in one block's report. The engine accepts only block
     /// sizes that cannot exceed it (engine::max_block_frames).

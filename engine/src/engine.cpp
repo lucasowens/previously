@@ -21,10 +21,12 @@ engine::engine(const engine_config& config) noexcept
 
 std::size_t engine::max_block_frames(sample_rate rate) noexcept
 {
-    const samples spacing = to_samples(clock_tracker::double_trigger_spacing, rate);
+    // Real pulses are at least the double-trigger spacing apart, but during a tempo transition
+    // reports can be half a period apart. Budget for that worst case.
+    const samples spacing        = to_samples(clock_tracker::double_trigger_spacing, rate);
+    const auto    report_spacing = std::max(spacing.value() / 2, std::int64_t{1});
 
-    return static_cast<std::size_t>(std::max(spacing.value(), std::int64_t{1})) *
-           clock_report::max_pulses;
+    return static_cast<std::size_t>(report_spacing) * clock_report::max_pulses;
 }
 
 void engine::process(const audio_block& block, std::span<const clock_event> events) noexcept

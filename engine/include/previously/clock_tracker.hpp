@@ -159,9 +159,12 @@ public:
     [[nodiscard]] std::optional<sample_time> bar_start(std::int64_t bar) const noexcept;
 
     /// The grid pulses with `after` < time < `before`, oldest first: recorded pulses from the
-    /// history, then predicted ones once the tempo is known. Each is labelled as it will be:
-    /// a predicted pulse at or after a pending reset is already numbered from 0. Writes at most
-    /// out.size() pulses and returns how many it wrote.
+    /// history, then predicted ones once the tempo is known. Writes at most out.size() pulses and
+    /// returns how many it wrote.
+    ///
+    /// Labelling, for this and every index query: while a reset is pending, indices are as they
+    /// will be once it applies. The pulse it will claim is 0 and earlier pulses count back from
+    /// -1, so nothing is ever announced under a number it is about to lose.
     [[nodiscard]] std::size_t
     pulses_between(sample_time after, sample_time before, std::span<grid_point> out) const noexcept;
 
@@ -178,6 +181,8 @@ private:
     void apply_pending_reset(sample_time when, std::int64_t sequence) noexcept;
     void note_real_pulse(sample_time when) noexcept;
     void relabel(std::int64_t sequence_of_bar_zero) noexcept;
+
+    [[nodiscard]] std::int64_t effective_offset() const noexcept;
 
     [[nodiscard]] sample_time  latest_time() const noexcept;
     [[nodiscard]] sample_time  history_at(std::int64_t sequence) const noexcept;
