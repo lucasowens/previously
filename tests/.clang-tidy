@@ -9,7 +9,8 @@ Checks: >
   -cppcoreguidelines-owning-memory,
   -readability-inconsistent-declaration-parameter-name,
   -cppcoreguidelines-avoid-do-while,
-  -cppcoreguidelines-macro-usage
+  -cppcoreguidelines-macro-usage,
+  -readability-function-cognitive-complexity
 
 # bugprone-random-generator-seed
 #     Fixed seeds are the point: test signals must be identical on every run.
@@ -21,3 +22,6 @@ Checks: >
 #     Our operator new/delete parameter names differ from libc++'s reserved __names.
 # cppcoreguidelines-avoid-do-while, cppcoreguidelines-macro-usage
 #     doctest's CHECK/REQUIRE macros expand to do-while blocks.
+# readability-function-cognitive-complexity
+#     Each CHECK/REQUIRE expands to branches, inflating the score of any test case.
+#     Production code keeps the check.

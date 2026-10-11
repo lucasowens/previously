@@ -7,6 +7,8 @@ add_executable(previously_tests
     test_main.cpp
     realtime_guard.cpp
     test_units.cpp
+    test_sample_time.cpp
+    test_clock_tracker.cpp
     test_spsc_queue.cpp
     test_engine.cpp
     test_wav.cpp

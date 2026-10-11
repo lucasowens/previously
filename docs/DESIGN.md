@@ -168,20 +168,35 @@ are 5 V tolerant.
 
 ### 3.3 Clock tracker
 
-The `clock_tracker` turns noisy edge timestamps into a clean **tempo** (samples per beat) and
-**beat phase**:
+`clock_tracker` (P1, implemented) turns noisy edge timestamps into a tempo and a pulse-indexed
+grid. Full explanation and measurements: [docs/learning/clock-tracking.md](learning/clock-tracking.md).
 
-- A **second-order PLL** (a phase detector plus a proportional-integral loop filter) tracks period
-  and phase. Its bandwidth adapts: fast to acquire, slow once locked. Tempo ramps are followed
-  without lag error.
-- **PPQN** is configurable for gates (1, 2, 4, 24; default 4, meaning 16th notes). MIDI is fixed
-  at 24, plus Start, Stop, Continue and Song Position Pointer.
-- **Reset** (gate or MIDI Start) re-aligns the bar phase.
-- **Clock loss:** if no edge arrives within 2 periods, the tracker freewheels at the last tempo.
-  The LED shows the freewheel state.
-- **Source priority:** gate, then MIDI, then tempo set by the first loop, then tap tempo. Patching
-  a clock takes over smoothly through the PLL.
-- **Meter:** beats per bar (default 4) sets the bar grid.
+- **Time:** `sample_time`, Q47.16 fixed point (64-bit ticks, 1/65,536 sample, a range of 93
+  years). Absolute time never lives in a float.
+- **Filter:** an α-β tracker (equivalent to a second-order DLL), with β derived from α for
+  critical damping and least-squares gains during acquisition. Tempo is known after 2 pulses.
+- **Grid:** integer pulse indices with a 2,048-pulse history of filtered times (questions about
+  the past) and extrapolation (questions about the future). Bars use floor division, so pulses
+  before a reset fall in negative bars.
+- **Presets, measured:**
+
+  | Preset | α | Ramp lag (10% over 8 bars) | Jitter |
+  |---|---|---|---|
+  | Gate | 0.9 | 0.6 samples | ×0.92 RMS (not amplified) |
+  | MIDI | 0.2 | 4 samples | 27.7 → 10.8 samples RMS on a jittery ramp |
+
+  An α-β tracker lags slightly behind steady tempo ramps; lower α smooths more but lags more.
+- **Robustness:**
+  - glitches under ½ period are ignored
+  - an error over ¼ period re-acquires, and the pulse count continues
+  - 2 silent periods switch to freewheeling at the last tempo, and the tracker locks again in
+    phase when pulses return
+  - a reset within 2 ms of a pulse makes that pulse bar 0, in either delivery order
+- **Not yet implemented:**
+  - selectable PPQN from the UI
+  - MIDI Start/Stop/SPP
+  - tap tempo
+  - source priority switching
 
 ### 3.4 Retrospective capture (the headline feature)
 
@@ -684,7 +699,7 @@ mode with drift correction, latency calibration.
 
 | Side | Criteria |
 |---|---|
-| Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp. Click metric ≤ 1.1 on the full test-signal set. |
+| Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp (**clock tracker: met**: < 0.01 steady, 0.6 ramp). Click metric ≤ 1.1 on the full test-signal set. |
 | Device | Capture alignment vs. clock edge within ±1 sample at the jacks. No drift over 64 bars. |
 
 ### P2 — Performance
