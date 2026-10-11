@@ -11,12 +11,12 @@ namespace previously {
 
 namespace {
 
-/// Shortest believable pulse interval while acquiring: 24 samples (0.5 ms at 48 kHz). That is
-/// faster than 24 PPQN at 2,000 BPM; anything shorter is noise.
-constexpr sample_time min_acquisition_interval = sample_time::from_samples(samples{24});
+/// Shortest believable pulse interval while acquiring: 0.5 ms is faster than 24 PPQN at
+/// 2,000 BPM, so anything shorter is noise.
+constexpr seconds min_acquisition_interval{0.0005F};
 
 /// How close a reset must be to a pulse to count as the same moment.
-constexpr sample_time reset_coincidence_window = sample_time::from_samples(samples{96});
+constexpr seconds reset_coincidence_window{0.002F};
 
 /// Upper bound on pulses added in one advance() call while freewheeling, so the call is
 /// bounded even if the caller skips a long stretch of time.
@@ -44,9 +44,14 @@ constexpr int max_freewheel_pulses_per_advance = 64;
 
 clock_tracker::clock_tracker(const clock_tracker_config& config) noexcept
     : config_{config},
+      min_acquisition_interval_{
+          sample_time::from_samples(to_samples(min_acquisition_interval, config.rate)),
+      },
+      reset_window_{sample_time::from_samples(to_samples(reset_coincidence_window, config.rate))},
       steady_alpha_{config.phase_gain},
       steady_beta_{(config.phase_gain * config.phase_gain) / (2.0F - config.phase_gain)}
 {
+    expects(config.rate.hz() > 0U);
     expects(config.pulses_per_beat > 0);
     expects(config.beats_per_bar > 0);
     expects(config.phase_gain > 0.0F && config.phase_gain <= 1.0F);
@@ -57,17 +62,19 @@ void clock_tracker::pulse(sample_time when) noexcept
     switch (state_) {
         case clock_state::no_clock:
             start_acquisition(when);
+            latest_raw_ = when;
             break;
 
         case clock_state::acquiring: {
             const sample_time interval = when - latest_time();
 
-            if (interval < min_acquisition_interval) {
+            if (interval < min_acquisition_interval_) {
                 return;  // glitch: too soon after the first pulse to be a clock
             }
 
             period_        = interval;
             pulses_in_fit_ = 2;
+            latest_raw_    = when;
             record(when);
             predicted_ = when + period_;
             state_     = clock_state::locked;
@@ -81,6 +88,8 @@ void clock_tracker::pulse(sample_time when) noexcept
             }
 
             const sample_time error = when - predicted_;
+
+            latest_raw_ = when;
 
             if (absolute(error) > divide(period_, 4)) {
                 reacquire(when);
@@ -99,8 +108,10 @@ void clock_tracker::reset(sample_time when) noexcept
 {
     // The reset and the first pulse of the bar are usually simultaneous, but they can be
     // delivered in either order. If the pulse came first, relabel it; otherwise label the next.
+    // Compare against the raw edge, not the filtered time: with a low phase gain the filtered
+    // time can sit tens of samples away from when the edge really arrived.
     const bool coincides_with_latest =
-        latest_sequence_ >= 0 && absolute(when - latest_time()) <= reset_coincidence_window;
+        latest_sequence_ >= 0 && absolute(when - latest_raw_) <= reset_window_;
 
     if (coincides_with_latest) {
         index_offset_  = latest_sequence_;

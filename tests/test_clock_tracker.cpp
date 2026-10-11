@@ -21,8 +21,9 @@
 namespace previously {
 namespace {
 
-constexpr double samples_per_beat_120_bpm = 24'000.0;                        // 48 kHz
-constexpr double gate_period              = samples_per_beat_120_bpm / 4.0;  // 4 PPQN
+constexpr sample_rate rate_48k{48'000U};
+constexpr double      samples_per_beat_120_bpm = 24'000.0;                        // 48 kHz
+constexpr double      gate_period              = samples_per_beat_120_bpm / 4.0;  // 4 PPQN
 
 /// Converts a reference time in samples to the tracker's fixed-point time.
 [[nodiscard]] sample_time at(double time_in_samples)
@@ -217,7 +218,7 @@ TEST_CASE("the MIDI preset halves jitter on a jittery tempo ramp")
 
     const double raw_rms = std::sqrt(raw_squares / static_cast<double>(truth.size()));
 
-    clock_tracker tracker{clock_tracker_config::midi()};
+    clock_tracker tracker{clock_tracker_config::midi(rate_48k)};
     feed(tracker, measured);
 
     CHECK(rms_error(tracker, truth, 100) < raw_rms / 2.0);
@@ -235,7 +236,7 @@ TEST_CASE("MIDI tempo is accurate within the first beat")
         std::mt19937                           generator{seed};
         std::uniform_real_distribution<double> jitter{-48.0, 48.0};
 
-        clock_tracker tracker{clock_tracker_config::midi()};
+        clock_tracker tracker{clock_tracker_config::midi(rate_48k)};
 
         for (int i = 0; i < 24; ++i) {
             tracker.pulse(at((period * i) + jitter(generator)));
@@ -255,7 +256,7 @@ TEST_CASE("the MIDI preset follows a clean tempo ramp to within 5 samples")
 {
     const std::vector<double> truth = midi_ramp();
 
-    clock_tracker tracker{clock_tracker_config::midi()};
+    clock_tracker tracker{clock_tracker_config::midi(rate_48k)};
     feed(tracker, truth);
 
     CHECK(max_error(tracker, truth, 0) < 5.0);
@@ -384,7 +385,7 @@ TEST_CASE("pulses before a reset belong to negative bars")
     // toward minus infinity: pulse -1 is the last pulse of bar -1, not part of bar 0.
     const auto truth = steady_clock(0.0, gate_period, 40);
 
-    clock_tracker tracker{clock_tracker_config::gate()};
+    clock_tracker tracker{clock_tracker_config::gate(rate_48k)};
 
     for (int i = 0; i <= 20; ++i) {
         tracker.pulse(at(truth[static_cast<std::size_t>(i)]));
@@ -396,6 +397,39 @@ TEST_CASE("pulses before a reset belong to negative bars")
     CHECK(tracker.bar_at_or_before(at(truth[4])) == -1);
     CHECK(tracker.bar_at_or_before(at(truth[3])) == -2);
     CHECK(std::abs(error_in_samples(known(tracker.bar_start(-1)), truth[4])) < 0.01);
+}
+
+TEST_CASE("time windows follow the sample rate")
+{
+    // At 96 kHz the 2 ms reset window is 192 samples. A reset 150 samples (1.6 ms) after a pulse
+    // is the same moment; with a window fixed in samples for 48 kHz it would not be.
+    constexpr double period_96k = 12'000.0;  // 120 BPM, 4 PPQN, 96 kHz
+
+    clock_tracker tracker{clock_tracker_config::gate(sample_rate{96'000U})};
+    feed(tracker, steady_clock(0.0, period_96k, 21));
+    tracker.reset(at((period_96k * 20.0) + 150.0));
+
+    CHECK(tracker.latest_pulse() == 0);
+}
+
+TEST_CASE("a reset matches the raw edge, not the filtered time")
+{
+    // With the MIDI preset a late edge is mostly smoothed away: its filtered time sits well
+    // before the raw edge. A reset at the raw edge must still count as the same moment.
+    constexpr double period = samples_per_beat_120_bpm / 24.0;
+
+    std::vector<double> times = steady_clock(0.0, period, 100);
+    times.back() += 80.0;  // the last edge arrives 80 samples (1.7 ms) late
+
+    clock_tracker tracker{clock_tracker_config::midi(rate_48k)};
+    feed(tracker, times);
+
+    const double filtered_gap = error_in_samples(known(tracker.pulse_time(99)), times.back());
+    REQUIRE(std::abs(filtered_gap) > 50.0);  // filtered and raw really are far apart
+
+    tracker.reset(at(times.back() + 60.0));  // 60 samples after the raw edge, within 2 ms
+
+    CHECK(tracker.latest_pulse() == 0);
 }
 
 TEST_CASE("past and future times map to the right pulse and bar")

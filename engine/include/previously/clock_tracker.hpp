@@ -27,6 +27,7 @@
 // is therefore known after two pulses and settles quickly.
 //
 // Robustness:
+//   - while acquiring, a pulse less than 0.5 ms after the first is a glitch
 //   - a pulse arriving less than half a period after the previous one is a glitch (double
 //     trigger) and is ignored
 //   - an error of more than a quarter period is a tempo change: the tracker re-acquires from
@@ -49,6 +50,7 @@
 namespace previously {
 
 struct clock_tracker_config {
+    sample_rate  rate{48'000U};
     std::int64_t pulses_per_beat{4};
     std::int64_t beats_per_bar{4};
     float        phase_gain{0.9F};  // alpha, in (0, 1]
@@ -60,16 +62,21 @@ struct clock_tracker_config {
     /// Eurorack gate clock. Edges are clean (sub-sample interrupt jitter), so each one is
     /// trusted: lag on a 10% tempo ramp stays under a sample.
     [[nodiscard]] static constexpr clock_tracker_config
-    gate(std::int64_t pulses_per_beat = 4) noexcept
+    gate(sample_rate rate, std::int64_t pulses_per_beat = 4) noexcept
     {
-        return {.pulses_per_beat = pulses_per_beat, .beats_per_bar = 4, .phase_gain = 0.9F};
+        return {
+            .rate            = rate,
+            .pulses_per_beat = pulses_per_beat,
+            .beats_per_bar   = 4,
+            .phase_gain      = 0.9F,
+        };
     }
 
     /// MIDI clock: 24 PPQN with up to about 1 ms of jitter. 0.2 gives the lowest total error on
     /// a jittery tempo ramp; lower values smooth more but lag audibly.
-    [[nodiscard]] static constexpr clock_tracker_config midi() noexcept
+    [[nodiscard]] static constexpr clock_tracker_config midi(sample_rate rate) noexcept
     {
-        return {.pulses_per_beat = 24, .beats_per_bar = 4, .phase_gain = 0.2F};
+        return {.rate = rate, .pulses_per_beat = 24, .beats_per_bar = 4, .phase_gain = 0.2F};
     }
 };
 
@@ -140,6 +147,8 @@ private:
     std::int64_t                              latest_sequence_{-1};
     std::int64_t                              index_offset_{0};
 
+    sample_time latest_raw_;  // the latest pulse exactly as measured (reset matching uses this)
+
     sample_time  period_;
     sample_time  predicted_;
     std::int64_t pulses_in_fit_{0};  // pulses since acquisition began (least-squares gain schedule)
@@ -148,6 +157,8 @@ private:
     bool        reset_pending_{false};
 
     clock_tracker_config config_;
+    sample_time          min_acquisition_interval_;
+    sample_time          reset_window_;
     float                steady_alpha_;
     float                steady_beta_;
     clock_state          state_{clock_state::no_clock};
