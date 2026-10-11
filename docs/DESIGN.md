@@ -123,10 +123,16 @@ Buffer size is a build-time constant and can be revisited (§15).
 so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48 kHz). Positions are
 `int64_t` sample counts, and fractional positions are fixed-point (Q32.32). §3.6 covers this.
 
-**Flash.** The STM32H750 has only **128 KB of internal flash**. The P0 passthrough firmware already
-uses 61% of it (mostly libDaisy and newlib). Before the engine grows much, the firmware moves to
-libDaisy's **bootloader** layout: the program lives in the 8 MB QSPI flash and runs from SRAM. The
-build fails if the budget is exceeded (T0).
+**Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it:
+
+| Stage | Flash used | Mostly |
+|---|---|---|
+| P0 passthrough | 61% | libDaisy and newlib |
+| With the clock wiring (P1) | 72% (94 KB) | About 9.5 KB of engine and tracker code at `-O3` with LTO |
+
+**The next firmware task, before retro capture,** is moving to libDaisy's **bootloader** layout:
+the program lives in the 8 MB QSPI flash and runs from SRAM. The build fails if the budget is
+exceeded (T0).
 
 **Internal SRAM.** Fixed engine state lives in internal SRAM, not SDRAM:
 
@@ -566,15 +572,29 @@ confidence, but nothing performance-critical depends on it.
 - **`engine/` knows nothing about hardware.** It takes buffers, clock events and commands, and
   produces audio and telemetry. The *same* code runs in tests, in the render tool, in Rack and on
   the Seed.
-- **Engine entry point (conceptual):**
+- **Engine entry point:**
 
   ```cpp
-  void engine::process(audio_block_view block, const clock_events& events);
+  void engine::process(const audio_block& block, std::span<const clock_event> events = {});
+  const clock_report& engine::clock() const;
   ```
 
-  `audio_block_view` holds `std::span`s for the stereo in/out. Commands (from UI, MIDI or tests)
-  arrive through a **lock-free single-producer/single-consumer queue** and are applied at the
-  start of the next block, quantized to the grid where relevant.
+  - `audio_block` holds `std::span`s for the stereo in and out.
+  - `events` are the block's clock and reset edges, timestamped from the block's first frame
+    with sub-sample precision, in time order.
+  - After each block, `clock()` reports the grid:
+    - lock state, beat period and current bar
+    - the grid pulses that fell in the block (offset, index, beat and bar flags), never closer
+      than half a period. Exactly once with steady or jittery clocks, resets, tempo increases,
+      a stopped clock and its return. During a sudden slowdown, predicted pulses can be reported
+      before the slowdown is known (a pinned number of extras); every real pulse is still
+      covered, by its own report or a prediction less than half a period before it.
+    - `bar_restarted` when a reset makes an already-reported pulse bar 0.
+    - Adapters use these for clock out and the lights.
+  - The engine's sample clock never goes backwards; all timestamps are measured against it.
+  - Commands (from UI, MIDI or tests) arrive through a **lock-free
+    single-producer/single-consumer queue** and are applied at the start of the next block,
+    quantized to the grid where relevant. For example, `reset_grid` acts like the reset input.
 - **Memory:** the engine receives one memory region (SDRAM on device, a heap block on host) at
   `init` and carves it with a fixed-layout allocator. **Nothing is allocated after init.**
 - **Strong unit types:** `samples`, `beats`, `seconds` and `ratio` are distinct types, so mixing
@@ -758,7 +778,8 @@ Schematic, PCB, panel, cue codec and SD save/load.
 4. Panel width (14 vs. 20 HP), and display vs. no display (§9.3), including panel variant vs. header option.
 5. Whether USB-host controller support ships on the module.
 6. Undo depth beyond one level (each level costs one 9.2 MB buffer).
-7. When to move the firmware to the QSPI bootloader layout (flash is 61% used at P0, §2.3).
+7. Moving the firmware to the QSPI bootloader layout is now due, before retro capture: flash is
+   72% used (§2.3).
 
 ---
 

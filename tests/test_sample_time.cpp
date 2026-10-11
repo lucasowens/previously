@@ -34,6 +34,12 @@ static_assert(floor_divide(-7, -2) == 3);
 static_assert(floor_divide(-8, 2) == -4);
 static_assert(floor_divide(0, 5) == 0);
 
+// floor_modulo stays in [0, divisor) for negative values, unlike %.
+static_assert(floor_modulo(17, 16) == 1);
+static_assert(floor_modulo(-1, 16) == 15);
+static_assert(floor_modulo(-16, 16) == 0);
+static_assert(floor_modulo(-17, 16) == 15);
+
 TEST_CASE("a fractional time splits into whole samples and a fraction")
 {
     const sample_time time = sample_time::from_samples(samples{1'000}, 0.25F);

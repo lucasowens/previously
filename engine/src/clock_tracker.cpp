@@ -15,7 +15,7 @@ namespace {
 
 /// Contact bounce and double triggers settle within a few milliseconds. 4 ms is still shorter
 /// than any musical pulse interval: 24 PPQN at 300 BPM is 8.3 ms.
-constexpr seconds double_trigger_window{0.004F};
+constexpr seconds double_trigger_window = clock_tracker::double_trigger_spacing;
 
 /// Slower than any musical pulse (1 PPQN at 15 BPM). A longer first interval means the first
 /// edge was stray.
@@ -161,7 +161,7 @@ void clock_tracker::reset(sample_time when) noexcept
     // Simultaneous with the latest real pulse, delivered in either order. Judged against the raw
     // edge: the filtered time can sit tens of samples away with a low phase gain.
     if (latest_raw_ && abs(when - *latest_raw_) <= reset_window_) {
-        index_offset_ = latest_raw_sequence_;
+        relabel(latest_raw_sequence_);
         pending_reset_.reset();
         return;
     }
@@ -171,7 +171,7 @@ void clock_tracker::reset(sample_time when) noexcept
         const auto before =
             sequence_at_or_before(when - reset_window_ - sample_time::from_ticks(1));
 
-        index_offset_ = before ? *before + 1 : oldest_sequence();
+        relabel(before ? *before + 1 : oldest_sequence());
         pending_reset_.reset();
         return;
     }
@@ -195,6 +195,11 @@ void clock_tracker::advance(sample_time now) noexcept
 clock_state clock_tracker::state() const noexcept
 {
     return state_;
+}
+
+std::int64_t clock_tracker::pulses_per_beat() const noexcept
+{
+    return pulses_per_beat_;
 }
 
 std::int64_t clock_tracker::pulses_per_bar() const noexcept
@@ -231,7 +236,7 @@ std::optional<std::int64_t> clock_tracker::latest_pulse() const noexcept
         return std::nullopt;
     }
 
-    return latest_sequence_ - index_offset_;
+    return latest_sequence_ - effective_offset();
 }
 
 std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const noexcept
@@ -242,7 +247,7 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
         return std::nullopt;
     }
 
-    const std::int64_t sequence = index + index_offset_;
+    const std::int64_t sequence = index + effective_offset();
 
     if (sequence <= latest_sequence_) {
         if (sequence < oldest_sequence()) {
@@ -264,7 +269,7 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
 std::optional<std::int64_t> clock_tracker::pulse_at_or_before(sample_time when) const noexcept
 {
     if (const auto sequence = sequence_at_or_before(when)) {
-        return *sequence - index_offset_;
+        return *sequence - effective_offset();
     }
 
     return std::nullopt;
@@ -382,7 +387,7 @@ void clock_tracker::fill_in_closed_slots(sample_time now) noexcept
                             period_.ticks()));
 
             if (first_at_reset < skipped) {
-                index_offset_ = latest_sequence_ + 1 + first_at_reset;
+                relabel(latest_sequence_ + 1 + first_at_reset);
                 pending_reset_.reset();
             }
         }
@@ -409,7 +414,7 @@ void clock_tracker::record(sample_time when) noexcept
 void clock_tracker::apply_pending_reset(sample_time when, std::int64_t sequence) noexcept
 {
     if (pending_reset_ && when >= *pending_reset_ - reset_window_) {
-        index_offset_ = sequence;
+        relabel(sequence);
         pending_reset_.reset();
     }
 }
@@ -428,6 +433,89 @@ void clock_tracker::note_real_pulse(sample_time when) noexcept
     fill_ins_since_raw_    = 0;
 
     apply_pending_reset(when, latest_sequence_);
+}
+
+void clock_tracker::relabel(std::int64_t sequence_of_bar_zero) noexcept
+{
+    index_offset_ = sequence_of_bar_zero;
+    ++resets_applied_;
+}
+
+std::int64_t clock_tracker::effective_offset() const noexcept
+{
+    // While a reset is pending, every index is labelled as it will be once the reset applies:
+    // the first pulse at or after it is 0, and earlier pulses count back from -1. One view for
+    // every query, so a pulse is never announced under a number it is about to lose, and the
+    // bar number agrees with the pulse labels. The slot is computed with the same arithmetic as
+    // fill_in_closed_slots() and apply_pending_reset(), so a prediction labelled 0 here is the
+    // pulse the reset will claim.
+    if (pending_reset_ && latest_sequence_ >= 0) {
+        if (const auto period = pulse_period()) {
+            const std::int64_t slots_ahead =
+                ceil_divide((*pending_reset_ - reset_window_ - latest_time()).ticks(),
+                            period->ticks());
+
+            return latest_sequence_ + std::max<std::int64_t>(1, slots_ahead);
+        }
+    }
+
+    return index_offset_;
+}
+
+std::uint32_t clock_tracker::resets_applied() const noexcept
+{
+    return resets_applied_;
+}
+
+std::size_t clock_tracker::pulses_between(sample_time           after,
+                                          sample_time           before,
+                                          std::span<grid_point> out) const noexcept
+{
+    std::size_t written = 0;
+
+    if (latest_sequence_ < 0 || out.empty()) {
+        return written;
+    }
+
+    // One labelling for the whole call (see effective_offset()).
+    const std::int64_t offset = effective_offset();
+
+    // Recorded pulses: from the first one after `after`, up to the latest.
+    const auto   at_or_before = sequence_at_or_before(after);
+    std::int64_t sequence     = at_or_before ? *at_or_before + 1 : oldest_sequence();
+
+    for (; sequence <= latest_sequence_ && written < out.size(); ++sequence) {
+        const sample_time time = history_at(sequence);
+
+        if (time >= before) {
+            return written;
+        }
+
+        out[written] = grid_point{.time = time, .index = sequence - offset};
+        ++written;
+    }
+
+    // Predicted pulses, once the tempo is known.
+    const auto period = pulse_period();
+
+    if (!period) {
+        return written;
+    }
+
+    for (; written < out.size(); ++sequence) {
+        const sample_time time = latest_time() + (*period * (sequence - latest_sequence_));
+
+        if (time >= before) {
+            return written;
+        }
+
+        if (time > after) {
+            out[written] = grid_point{.time = time, .index = sequence - offset};
+            ++written;
+        }
+    }
+
+    return written;
 }
 
 sample_time clock_tracker::latest_time() const noexcept

@@ -11,6 +11,7 @@ add_executable(previously_tests
     test_clock_tracker.cpp
     test_spsc_queue.cpp
     test_engine.cpp
+    test_engine_clock.cpp
     test_wav.cpp
     test_block_adapter.cpp
 )
@@ -43,4 +44,13 @@ add_custom_target(bless
     COMMAND ${CMAKE_COMMAND} ${golden_args} -DBLESS=ON -P ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_golden.cmake
     DEPENDS previously_render
     COMMENT "Approving current render output as the new golden reference"
+)
+
+# The render tool refuses a block size the engine cannot take at the file's sample rate, with a
+# clear message instead of an engine contract violation.
+add_test(NAME render_rejects_oversized_block
+    COMMAND ${CMAKE_COMMAND}
+            -DRENDER=$<TARGET_FILE:previously_render>
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/render_limits
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/render_limits.cmake
 )

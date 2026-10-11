@@ -257,7 +257,7 @@ C++ Core Guidelines naming (NL.10), the same style the standard library uses:
 | Variables and parameters | `snake_case` | `block_frames` |
 | Private and protected data members | `snake_case_` | `sample_clock_` |
 | Public struct members | `snake_case` | `in_left` |
-| Enumerators | `snake_case` | `command_type::reset_sample_clock` |
+| Enumerators | `snake_case` | `command_type::reset_grid` |
 | Constants (`constexpr`) | `snake_case` | `cache_line_bytes` |
 | Template parameters | `CamelCase` | `Tag`, `Capacity` |
 | Macros (rare) | `UPPER_CASE` | — |

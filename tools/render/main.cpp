@@ -2,7 +2,7 @@
 // Previously — render tool: runs WAV files through the engine offline.
 //
 //   previously_render process  <in.wav> <out.wav> [--block <frames>]
-//   previously_render generate <sine|impulses|noise> <out.wav> [--frames <count>]
+//   previously_render generate <sine|impulses|noise> <out.wav> [--frames <count>] [--rate <hz>]
 //
 // `process` drives the exact engine the firmware runs, block by block, and writes the result.
 // `generate` makes the deterministic stimulus files used by the golden tests.
@@ -29,10 +29,9 @@
 namespace previously::tools {
 namespace {
 
-constexpr std::size_t   default_block_frames = 32;
-constexpr std::size_t   max_block_frames     = 4'096;
-constexpr std::size_t   default_frames       = 12'000;
-constexpr std::uint32_t generate_rate_hz     = 48'000U;
+constexpr std::size_t default_block_frames = 32;
+constexpr std::size_t default_frames       = 12'000;
+constexpr std::size_t default_rate_hz      = 48'000;
 
 /// Writes one line to stderr.
 void report(std::string_view message)
@@ -45,7 +44,8 @@ void print_usage()
 {
     report("usage:\n"
            "  previously_render process  <in.wav> <out.wav> [--block <frames>]\n"
-           "  previously_render generate <sine|impulses|noise> <out.wav> [--frames <count>]");
+           "  previously_render generate <sine|impulses|noise> <out.wav> [--frames <count>] "
+           "[--rate <hz>]");
 }
 
 [[nodiscard]] std::optional<std::size_t> parse_count(std::string_view text)
@@ -87,8 +87,8 @@ option_count(std::span<const std::string_view> options, std::string_view name, s
 
     const auto block_frames = option_count(args.subspan(2), "--block", default_block_frames);
 
-    if (!block_frames || *block_frames > max_block_frames) {
-        report("--block must be between 1 and 4096");
+    if (!block_frames) {
+        report("--block must be a positive integer");
         return 2;
     }
 
@@ -97,6 +97,15 @@ option_count(std::span<const std::string_view> options, std::string_view name, s
     if (const status result = read_wav(args[0], input); !result.ok()) {
         report(result.error);
         return 1;
+    }
+
+    // The engine's limit depends on the sample rate, which comes from the file.
+    const std::size_t limit = engine::max_block_frames(sample_rate{input.sample_rate_hz});
+
+    if (*block_frames > limit) {
+        report("--block must be at most " + std::to_string(limit) + " at " +
+               std::to_string(input.sample_rate_hz) + " Hz");
+        return 2;
     }
 
     stereo_audio output;
@@ -153,13 +162,20 @@ option_count(std::span<const std::string_view> options, std::string_view name, s
         return 2;
     }
 
+    const auto rate = option_count(args.subspan(2), "--rate", default_rate_hz);
+
+    if (!rate || *rate > 768'000) {
+        report("--rate must be between 1 and 768000");
+        return 2;
+    }
+
     stereo_audio audio;
-    audio.sample_rate_hz = generate_rate_hz;
+    audio.sample_rate_hz = static_cast<std::uint32_t>(*rate);
     audio.left.resize(*frames);
     audio.right.resize(*frames);
 
     constexpr float two_pi    = 2.0F * std::numbers::pi_v<float>;
-    constexpr auto  rate_hz   = static_cast<float>(generate_rate_hz);
+    const auto      rate_hz   = static_cast<float>(*rate);
     std::uint32_t   noise_rng = 0x2545F491U;
 
     for (std::size_t i = 0; i < *frames; ++i) {

@@ -83,21 +83,6 @@ TEST_CASE("the sample clock advances by exactly the frames processed")
     CHECK(audio_engine.sample_clock() == samples{1'000});
 }
 
-TEST_CASE("a reset command takes effect at the start of the next block")
-{
-    engine         audio_engine{engine_config{}};
-    stereo_fixture fixture{64};
-
-    fixture.process_in_blocks(audio_engine, 32);
-    REQUIRE(audio_engine.sample_clock() == samples{64});
-
-    REQUIRE(audio_engine.post(command{.type = command_type::reset_sample_clock}));
-    CHECK(audio_engine.sample_clock() == samples{64});
-
-    fixture.process_in_blocks(audio_engine, 32);
-    CHECK(audio_engine.sample_clock() == samples{64});
-}
-
 TEST_CASE("posting fails cleanly when the command queue is full")
 {
     engine audio_engine{engine_config{}};

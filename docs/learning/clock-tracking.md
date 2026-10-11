@@ -256,6 +256,84 @@ the final state.
 
 ---
 
+## 8. Getting pulses in, and clock out
+
+The tracker only sees timestamps. Two adapters produce and consume them.
+
+### In: timing edges from sampled signals (the Rack adapter)
+
+`edge_detector` is a Schmitt trigger using Rack's conventions: high at 1 V, re-armed only after
+the signal falls to 0.1 V, so noise on a high gate never retriggers. Its timing rule rests on what
+a sampled signal can actually tell you:
+
+- **A digital step carries no sub-sample information.** The gate is low on one sample and high on
+  the next. The module that produced it means "this sample", so the edge is timed at the sample
+  where it is first seen. That also lines Rack clocks up with Rack audio, sample for sample.
+- **An edge caught mid-rise does.** If the previous sample was already above 0.1 V (a slewed or
+  filtered gate), the 1 V crossing is found by linear interpolation between the two samples.
+
+Every timestamp is relative to the start of the audio block, as the engine requires. A mid-rise
+edge can interpolate back across a block boundary, into a block that has already been processed.
+It is placed at the new block's first frame instead: an error under one sample, and only for
+slewed edges.
+
+### Out: reporting each grid pulse
+
+After each block the engine reports the grid pulses that fell inside it. The adapter turns them
+into clock-out triggers and beat lights.
+
+My first version promised "each pulse exactly once", and a review on PR #2 showed where that
+failed. The guarantee is now stated exactly as the code meets it:
+
+> **Reported pulses are never closer than half a period** (the period in force at the previous
+> report). **Every real pulse is covered**: reported at its time, or stood in for by a prediction
+> less than half a period before it. With
+> steady or jittery clocks, resets, tempo increases, a stopped clock and its return, every grid
+> pulse is reported **exactly once**, with its final index.
+
+**How it works:**
+
+- **Hysteresis by time.** A grid pulse is reported once it lies at least half a period after the
+  last pulse reported. "At least" matters: a pulse exactly on the boundary used to be dropped.
+- **Why not by index.** Indices get relabelled: a reset turns pulse 37 into pulse 0, and a slowed
+  clock retires fill-ins that were already reported.
+- **The half period is the one in force at the last report,** not the current one. When the clock
+  slows, the new, longer period would otherwise hide the first real slow pulse inside the window,
+  and a real pulse would get no trigger.
+- **Labels come from the tracker.** `clock_tracker::pulses_between()` returns recorded pulses then
+  predicted ones, already labelled the way they *will* be. A prediction at or after a pending
+  reset is already numbered 0, so a reset while the clock is stopped is reported as bar 0 when it
+  happens.
+- **`bar_restarted`.** A reset can arrive after its pulse was reported (a late edge whose
+  prediction already went out). Reports can't be taken back, so the report raises `bar_restarted`
+  instead, and the bar light uses it. It isn't raised when that pulse was already reported as 0.
+
+**The one inherent exception: sudden slowdowns.** The grid predicts at the old tempo, and a
+prediction goes out before anyone can know the real pulse will be late. Every real pulse is still
+reported, at its time or covered by a prediction less than half an old period before it, and
+reports follow the real pulses one for one once the slowdown is confirmed. The extra predicted
+reports during the transition are pinned by a test:
+
+| Slowdown | Extra reports | Why |
+|---|---|---|
+| 1.5×, 2× | 1 | The next prediction goes out, then the real pulse |
+| 2.2× | 1 | Two predictions; the second stands in for the real pulse, 0.2 periods early |
+| 2.5× | 2 | Two predictions, then the real pulse |
+| 3× | 4 | The clock looks stopped for two gaps, so predictions keep clock out running until the second real pulse confirms the slowdown |
+| 4× | 6 | As for 3×, over longer gaps |
+
+A single pulse late by a quarter to a half period, then back on the grid, gives one extra report
+too. That one comes from the tracker treating it as two tempo changes, tracked in issue #3.
+
+The alternative rule (the current period) produces fewer extras, but it gives some *real*
+pulses no trigger at all. A downbeat from the master clock with no clock out is the worse
+failure.
+
+The adapter then plays each reported pulse as a 1 ms trigger **one block later, at the same
+offset**: the same one-block latency the audio has, so clock out stays aligned with the sound.
+
+---
+
 ## Further reading
 
 - Fons Adriaensen, *Using a DLL to filter time* (2005). The DLL view of the same filter, as used in
