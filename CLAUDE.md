@@ -46,9 +46,13 @@ hook runs the format check and the host tests.
 
 ## Code
 
-- C++20 embedded subset: no exceptions, no RTTI, no heap after init, bounded loops,
-  `float` (never `double`) in the engine, strong unit types. Tests may use `double` as a
-  reference.
+- C++20 throughout, with rules scoped as in CODING_STANDARD §3:
+  - **Engine, tools and firmware:** no exceptions or RTTI; no heap after init in the engine;
+    `float`, never `double`, in the engine; strong unit types.
+  - **The realtime path** (`engine::process()` and everything it calls): no allocation, locks,
+    I/O or recursion, and bounded loops only.
+  - **Host tests** may use exceptions (doctest does) and `double` as a reference. Offline
+    tools and tests are not under the realtime rules.
 - **Style is enforced and matters to the user, who reads code like a book:**
   - Core Guidelines naming: `snake_case`, `trailing_underscore_` members
   - Stroustrup braces, 100 columns
@@ -66,7 +70,10 @@ hook runs the format check and the host tests.
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
     acquisition; freewheeling; resets; outlier verdicts (hiccup, phase shift, tempo change)
-  - Engine clock wiring with `clock_report` (each pulse reported once, labels as they will be)
+  - Engine clock wiring with `clock_report`. Reports are never closer than half a period and
+    every real pulse is covered; exactly once only for displacements under half a period, and
+    sudden slowdowns add pinned extras (`clock_events.hpp`, clock-tracking.md §8). Labels
+    are as they will be once a pending reset applies.
   - Rack CLOCK, RESET and CLOCK OUT jacks and lights. Verified in VCV Rack 2 Pro by the user.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
