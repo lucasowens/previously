@@ -325,16 +325,21 @@ TEST_CASE("a sudden slowdown reports every real pulse; the transition is pinned"
     // half an old period before it. Reports are never closer than half an old period. Once the
     // slowdown is confirmed, reports follow the real pulses one for one. The number of extra,
     // predicted reports during the transition is pinned so it cannot change silently.
+    //
+    // Below 2.5x the tracker confirms a tempo change only at the second slow pulse (one pulse
+    // can't distinguish it from a hiccup, issue #3), so one more old-grid prediction goes out
+    // than with immediate re-locking: 1 -> 2 extras at 1.5x to 2.2x, 2 -> 4 at 2.5x. From 3x
+    // the clock looks stopped first and the freewheel path decides, unchanged.
     struct slowdown {
         double      factor;
         std::size_t extra_reports;
     };
 
     const std::array<slowdown, 6> cases{
-        slowdown{.factor = 1.5, .extra_reports = 1},
-        slowdown{.factor = 2.0, .extra_reports = 1},
-        slowdown{.factor = 2.2, .extra_reports = 1},
-        slowdown{.factor = 2.5, .extra_reports = 2},
+        slowdown{.factor = 1.5, .extra_reports = 2},
+        slowdown{.factor = 2.0, .extra_reports = 2},
+        slowdown{.factor = 2.2, .extra_reports = 2},
+        slowdown{.factor = 2.5, .extra_reports = 4},
         slowdown{.factor = 3.0, .extra_reports = 4},
         slowdown{.factor = 4.0, .extra_reports = 6},
     };
@@ -376,11 +381,11 @@ TEST_CASE("a sudden slowdown reports every real pulse; the transition is pinned"
     }
 }
 
-TEST_CASE("a single late pulse gives one extra report (pinned; see issue #3)")
+TEST_CASE("a single late pulse is reported once, with no extras (issue #3)")
 {
-    // Pulse 20 arrives a third of a period late, then the clock is back on the grid. The
-    // tracker's quarter-period rule treats that as two tempo changes (issue #3), and the reporter
-    // emits one extra pulse. Pinned so the number is known, and so fixing #3 shows up here.
+    // Pulse 20 arrives a third of a period late, then the clock is back on the grid. Before
+    // issue #3 was fixed the tracker treated that as two tempo changes and the reporter emitted
+    // one extra pulse; now the hiccup changes nothing and every pulse is reported exactly once.
     std::vector<double> times = steady(0.0, gate_period, 40);
     times[20] += gate_period / 3.0;
 
@@ -388,7 +393,7 @@ TEST_CASE("a single late pulse gives one extra report (pinned; see issue #3)")
     const auto reported =
         run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
 
-    CHECK(reported.size() == (times.size() - 1) + 1);
+    CHECK(reported.size() == times.size() - 1);
 
     for (std::size_t i = 21; i < times.size(); ++i) {
         const bool covered = std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
@@ -396,6 +401,50 @@ TEST_CASE("a single late pulse gives one extra report (pinned; see issue #3)")
         });
         CAPTURE(i);
         CHECK(covered);
+    }
+}
+
+TEST_CASE("a pulse more than half a period off is covered, but its index is not reported once")
+{
+    // Beyond half a period, a displaced pulse is closer to its neighbour's slot than to its own.
+    // The guarantee that still holds: every real pulse is covered. The labels are pinned:
+    //   late (+0.6P): index 20 is reported twice (prediction, then the real pulse), 21 never
+    //   early (-0.6P): index 20 is never reported (inside the window after pulse 19)
+    struct displaced {
+        double                    offset;
+        std::vector<std::int64_t> indices;  // reported indices from pulse 19 to 23
+    };
+
+    const std::array<displaced, 3> cases{
+        displaced{.offset = 0.45, .indices = {19, 20, 21, 22, 23}},
+        displaced{.offset = 0.6, .indices = {19, 20, 20, 22, 23}},
+        displaced{.offset = -0.6, .indices = {19, 21, 22, 23}},
+    };
+
+    for (const displaced& c : cases) {
+        CAPTURE(c.offset);
+
+        std::vector<double> times = steady(0.0, gate_period, 30);
+        times[20] += gate_period * c.offset;
+
+        auto       audio_engine = make_engine(32);
+        const auto reported =
+            run(*audio_engine, pulses_at(times), static_cast<std::size_t>(times.back()) + 10, 32);
+
+        std::vector<std::int64_t> indices;
+        for (const reported_pulse& pulse : reported) {
+            if (pulse.time > gate_period * 18.5 && pulse.time < gate_period * 23.5) {
+                indices.push_back(pulse.index);
+            }
+        }
+        CHECK(indices == c.indices);
+
+        for (const double real : times) {
+            const bool covered = std::ranges::any_of(reported, [&](const reported_pulse& pulse) {
+                return pulse.time <= real + 0.01 && real - pulse.time < gate_period / 2.0;
+            });
+            CHECK((covered || real < gate_period / 2.0));  // only pulse 0 precedes the tempo
+        }
     }
 }
 

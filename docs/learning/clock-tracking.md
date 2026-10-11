@@ -184,8 +184,12 @@ measurements.** The rules now follow a single principle:
 |---|---|---|
 | Double trigger (a bouncing gate) | Less than **4 ms** after the previous real pulse | Ignored. Absolute time, not "half a period", so an exact tempo doubling is never mistaken for bounce. |
 | Stray first edge (patching a cable) | While acquiring, an interval over **4 s** | The stray edge is replaced by this one; acquisition restarts |
-| Tempo change | Prediction error over **¼ period** | Re-acquire from the interval to the previous real pulse. The pulse count continues. |
-| Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. |
+| Outlier | Prediction error over **¼ period** | Recorded where it really happened, but the tempo is kept and the grid keeps predicting from the old phase. The *next* pulse decides, by comparing intervals between real edges. |
+| Hiccup (one late or early pulse) | The next pulse lands back on the old grid | Nothing changes: the tempo and phase were never disturbed (issue #3) |
+| Phase shift | The next interval matches the **current period** (within ¼) | The clock carried on at the same tempo from a new phase: re-anchor the phase only. Checked before the tempo-change rule, so a shift of ¼–⅓ of a period isn't briefly mistaken for a new tempo. |
+| Tempo change | The next interval matches the **outlier's** (within ¼) | Re-acquire from that interval. Three real edges agree, so the fit starts at 3 and the very next pulse already has hiccup immunity. The pulse count continues. |
+| Provisional tempo | A tempo resting on one interval (fewer than 3 pulses in the fit) | An outlier re-acquires at once: the first interval is as likely to be wrong (a stray edge) |
+| Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. Judged against the current period even while an outlier is pending, so a hiccup just before a short stop doesn't change how the return is numbered. The known cost: a halving whose confirming pulse is more than ¼ late (intervals 2P then 2.6P, which genuinely don't agree) reads as a stop and keeps two filled-in pulses until the next reset. Pinned by a test. |
 | Clock returns | A real pulse while freewheeling | **Re-anchor phase only:** the pulse may land anywhere in its slot, so the gap measures phase, not tempo. The *next* real pulse measures the tempo from two real edges. |
 | Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. |
 | Very long silence | More slots closed than the history holds | Skipped in O(1); at most `history_capacity()` fill-ins are written |
@@ -203,6 +207,11 @@ itself, so the result never depends on how often `advance()` runs. A test pins t
 **History storage belongs to the owner.** The history (16 KB for 2,048 pulses) is a `std::span`
 handed in by whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs
 256 entries at 4 PPQN but 1,536 at 24 PPQN.
+
+**Where hiccup immunity does not apply.** It needs a confirmed tempo: three pulses in the fit.
+Right after acquisition, the tempo rests on one interval, so any outlier re-acquires. After a
+freewheel return, the returning pulse and the next two rebuild the fit, so immunity resumes
+from the fourth pulse. Both follow from "re-anchor, then measure", and both are short.
 
 All loops are bounded:
 
@@ -254,6 +263,28 @@ broken on purpose, one at a time, and the suite run against it.
 one-pulse period error is an audible pitch jump. Tests must check the moments that matter, not just
 the final state.
 
+**Round 3** (the hiccup fix, issue #3). The same lesson, a third time:
+
+| Planted bug | First result | Action |
+|---|---|---|
+| Prediction after an outlier restarts from the outlier, not the old grid | **Survived** | The end state was identical. A test now checks the *prediction* right after a hiccup. Strengthening it exposed a real bug: public extrapolation was anchored on the latest recorded pulse (the off-grid hiccup), not on the prediction, so reports and fill-ins could disagree by the hiccup's offset. Every extrapolation now anchors on the prediction. |
+| Outlier interval not forgotten on return to the grid | **Survived** | A second identical hiccup went through two bogus re-locks that happened to land back on the right period. The test now checks the period **at every pulse**. |
+| No least-squares acquisition | **Survived** (was caught before) | The new outlier handling also converges by pulse 24, so the end-of-beat check stopped separating them. Measured over 200 seeds, least squares matters most mid-beat (worst 8.4 vs mean 18 samples after 9 pulses); the test now checks there too. |
+| Lookup ignores the gap before the prediction | **Survived** | Only an early hiccup leaves a gap of more than a period to the next prediction. A lookup inside that gap is now tested. |
+| Outliers re-lock immediately (the old behaviour), no provisional tempo, extrapolation anchored on the latest pulse | Caught | — |
+
+**Round 4** (the review of the hiccup fix, PR #4). The review found a one-pulse gap in immunity
+after a confirmed tempo change, phase shifts taking three pulses, two permanent phantoms in a
+compound case, and an overflow. Each fix got a test, then each fix was removed to check it:
+
+| Fix removed | First result | Action |
+|---|---|---|
+| Phase-shift verdict | **Survived** | The end state and the period were identical; what the verdict changes is the *prediction* during the transition (clock out on the new phase after two pulses, not three). The test now checks the prediction after each shifted pulse. Fourth time the same lesson: check the moments that matter. |
+| Fit of 3 after a confirmed change | Caught | — |
+| Stop detection ignores the pending outlier | Caught | — (fix 3 was later reverted: the follow-up review showed it moved the inconsistency to the commoner case of a hiccup before a short stop, where the misnumbering grows with the hiccup; both cases are now pinned) |
+| Overflow guard (UBSan) | Caught | — |
+| "Same length" tolerance widened to a half | Caught | — |
+
 ---
 
 ## 8. Getting pulses in, and clock out
@@ -287,9 +318,15 @@ failed. The guarantee is now stated exactly as the code meets it:
 
 > **Reported pulses are never closer than half a period** (the period in force at the previous
 > report). **Every real pulse is covered**: reported at its time, or stood in for by a prediction
-> less than half a period before it. With
-> steady or jittery clocks, resets, tempo increases, a stopped clock and its return, every grid
-> pulse is reported **exactly once**, with its final index.
+> less than half a period before it. With steady or jittery clocks, hiccups and phase shifts of
+> under half a period, resets, tempo increases, a stopped clock and its return, every grid pulse
+> is reported **exactly once**, with its final index.
+
+A pulse displaced by **more than half a period** is closer to its neighbour's slot than to its
+own. It is still covered, but the labels can't come out exactly once. 0.6 of a period late:
+index 20 is reported twice (the prediction, then the real pulse) and index 21 never. 0.6 early:
+index 20 is never reported. Both are pinned. At exactly half a period (only reachable with
+synthetic edges) a phase shift reports two indices twice.
 
 **How it works:**
 
@@ -316,14 +353,16 @@ reports during the transition are pinned by a test:
 
 | Slowdown | Extra reports | Why |
 |---|---|---|
-| 1.5×, 2× | 1 | The next prediction goes out, then the real pulse |
-| 2.2× | 1 | Two predictions; the second stands in for the real pulse, 0.2 periods early |
-| 2.5× | 2 | Two predictions, then the real pulse |
+| 1.5×, 2×, 2.2× | 2 | One pulse can't tell a slowdown from a hiccup (issue #3), so the tempo changes at the second slow pulse; old-grid predictions go out until then |
+| 2.5× | 4 | As above, over a longer gap |
 | 3× | 4 | The clock looks stopped for two gaps, so predictions keep clock out running until the second real pulse confirms the slowdown |
 | 4× | 6 | As for 3×, over longer gaps |
 
-A single pulse late by a quarter to a half period, then back on the grid, gives one extra report
-too. That one comes from the tracker treating it as two tempo changes, tracked in issue #3.
+Those numbers are the price of hiccup immunity. Before issue #3 was fixed they were 1, 1, 1 and 2,
+but a single pulse a third of a period late, then back on the grid, cost an extra report and two
+bogus tempo changes. Now a hiccup changes nothing and is reported exactly once. A sudden
+deliberate slowdown is rare and audibly a transition anyway; hiccups from a jittery source can
+happen at any time.
 
 The alternative rule (the current period) produces fewer extras, but it gives some *real*
 pulses no trigger at all. A downbeat from the master clock with no clock out is the worse
