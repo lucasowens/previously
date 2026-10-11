@@ -140,9 +140,10 @@ void clock_tracker::pulse(sample_time when) noexcept
             const sample_time error = when - predicted_;
 
             if (abs(error) > period_ / tempo_change_divisor) {
-                lock_on_interval(when, when - previous_raw);
+                handle_outlier(when, when - previous_raw);
             }
             else {
+                outlier_interval_.reset();  // back on the grid: any outlier was a one-off
                 track(error);
             }
             break;
@@ -263,7 +264,7 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
         return std::nullopt;
     }
 
-    return latest_time() + (*period * (sequence - latest_sequence_));
+    return predicted_time(sequence);
 }
 
 std::optional<std::int64_t> clock_tracker::pulse_at_or_before(sample_time when) const noexcept
@@ -306,9 +307,45 @@ void clock_tracker::lock_on_interval(sample_time when, sample_time interval) noe
 
     period_        = interval;
     pulses_in_fit_ = 2;
+    outlier_interval_.reset();
     record(when);
     predicted_ = when + period_;
     state_     = clock_state::locked;
+}
+
+void clock_tracker::handle_outlier(sample_time when, sample_time interval) noexcept
+{
+    // A pulse far from its prediction is either a one-off (a hiccup: one late or early pulse in
+    // a steady clock) or the first pulse of a new tempo. One pulse can't tell them apart; the
+    // next one can, by comparing the intervals between real edges. Two consecutive intervals
+    // that agree mean a new tempo. A hiccup's two intervals disagree (P + d, then P - d), and
+    // its next pulse lands back on the old grid. Comparing intervals rather than counting
+    // outliers matters for tempo doubling: there, every other pulse lands on the old grid.
+    const bool tempo_changed = outlier_interval_ && abs(interval - *outlier_interval_) <=
+                                                        *outlier_interval_ / same_interval_divisor;
+
+    // A tempo resting on a single interval is provisional: an outlier against it is as likely
+    // to mean that interval was wrong (a stray edge before the clock started). Doubt outliers
+    // only once the fit has confirmed the tempo with a third pulse.
+    const bool tempo_provisional = pulses_in_fit_ < 3;
+
+    if (tempo_changed || tempo_provisional) {
+        lock_on_interval(when, interval);
+        return;
+    }
+
+    // Not yet known: record the edge where it really happened (it is a real pulse, and the
+    // history must be exact for capture), keep the tempo, and keep predicting on the old grid
+    // from the slot after this one.
+    outlier_interval_ = interval;
+
+    const sample_time  old_prediction = predicted_;
+    const std::int64_t slots_ahead =
+        std::max<std::int64_t>(1,
+                               floor_divide((when - old_prediction).ticks(), period_.ticks()) + 1);
+
+    record(when);
+    predicted_ = old_prediction + (period_ * slots_ahead);
 }
 
 void clock_tracker::track(sample_time error) noexcept
@@ -336,6 +373,8 @@ void clock_tracker::track(sample_time error) noexcept
 
 void clock_tracker::return_from_freewheel(sample_time when, sample_time previous_raw) noexcept
 {
+    outlier_interval_.reset();
+
     const sample_time raw_interval = when - previous_raw;
 
     // Two consecutive long gaps of the same length: the clock slowed down, it did not stop.
@@ -451,11 +490,13 @@ std::int64_t clock_tracker::effective_offset() const noexcept
     // pulse the reset will claim.
     if (pending_reset_ && latest_sequence_ >= 0) {
         if (const auto period = pulse_period()) {
-            const std::int64_t slots_ahead =
-                ceil_divide((*pending_reset_ - reset_window_ - latest_time()).ticks(),
-                            period->ticks());
+            // The first predicted pulse at or after the reset window's start.
+            const std::int64_t slots_after_next = std::max<std::int64_t>(
+                0,
+                ceil_divide((*pending_reset_ - reset_window_ - predicted_).ticks(),
+                            period->ticks()));
 
-            return latest_sequence_ + std::max<std::int64_t>(1, slots_ahead);
+            return latest_sequence_ + 1 + slots_after_next;
         }
     }
 
@@ -503,7 +544,7 @@ std::size_t clock_tracker::pulses_between(sample_time           after,
     }
 
     for (; written < out.size(); ++sequence) {
-        const sample_time time = latest_time() + (*period * (sequence - latest_sequence_));
+        const sample_time time = predicted_time(sequence);
 
         if (time >= before) {
             return written;
@@ -516,6 +557,17 @@ std::size_t clock_tracker::pulses_between(sample_time           after,
     }
 
     return written;
+}
+
+sample_time clock_tracker::predicted_time(std::int64_t sequence) const noexcept
+{
+    // Every extrapolation anchors on the next predicted pulse, not on the latest recorded one.
+    // They are the same while tracking, but after an outlier the latest pulse is recorded where
+    // it really happened while the prediction stays on the old grid, and while freewheeling the
+    // prediction is the next open slot. One anchor means reports, queries and fill-ins agree.
+    expects(sequence > latest_sequence_);
+
+    return predicted_ + (period_ * (sequence - latest_sequence_ - 1));
 }
 
 sample_time clock_tracker::latest_time() const noexcept
@@ -551,7 +603,13 @@ std::optional<std::int64_t> clock_tracker::sequence_at_or_before(sample_time whe
             return latest_sequence_;
         }
 
-        return latest_sequence_ + floor_divide((when - latest_time()).ticks(), period->ticks());
+        // Before the next predicted pulse, the latest is still the latest; from it on, count
+        // whole periods along the predicted grid.
+        if (when < predicted_) {
+            return latest_sequence_;
+        }
+
+        return latest_sequence_ + 1 + floor_divide((when - predicted_).ticks(), period->ticks());
     }
 
     // In the past: binary search the history, which is sorted by time.

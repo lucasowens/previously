@@ -218,7 +218,9 @@ grid. Full explanation, measurements and the mutation-testing record:
 - **Robustness. Rule: tempo is only ever measured between two real edges:**
   - a pulse within 4 ms of the previous one is a double trigger
   - an interval over 4 s while acquiring discards a stray first edge
-  - an error over ¼ period re-acquires, and the pulse count continues
+  - an error over ¼ period is an outlier: recorded where it happened, tempo kept; the next pulse
+    decides. Agreeing intervals mean a tempo change (re-acquire); landing back on the grid means
+    a hiccup (nothing changes). A tempo resting on one interval re-acquires at once.
   - 2.5 silent periods switch to freewheeling: pulses are filled in at the last tempo
   - a returning clock re-anchors the phase only; the next real pulse measures the tempo
   - two equal long gaps mean a slowed clock: the fill-ins are retired

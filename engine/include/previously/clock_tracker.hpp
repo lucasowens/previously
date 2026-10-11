@@ -29,8 +29,11 @@
 //   double trigger   a pulse within 4 ms of the previous real pulse is ignored (contact bounce)
 //   stray edge       while acquiring, an interval over 4 s means the first edge was stray: it is
 //                    replaced by this one
-//   tempo change     an error of more than a quarter period re-acquires from the interval between
-//                    this pulse and the previous real one; the pulse count continues
+//   outlier          a pulse more than a quarter period off its prediction is recorded where it
+//                    happened, but the tempo is kept until the next pulse decides:
+//   tempo change       its interval agrees with the outlier's: re-acquire from that interval
+//   hiccup             it lands back on the old grid: the outlier was a one-off; nothing changes
+//                    The pulse count continues either way.
 //   clock stopped    2.5 periods without a pulse switches to freewheeling: the tracker fills in
 //                    pulses at the last tempo so the grid keeps running. Each fill-in is committed
 //                    half a period after its slot, so a late real pulse can still claim the slot.
@@ -175,6 +178,7 @@ public:
 private:
     void lock_on_interval(sample_time when, sample_time interval) noexcept;
     void track(sample_time error) noexcept;
+    void handle_outlier(sample_time when, sample_time interval) noexcept;
     void return_from_freewheel(sample_time when, sample_time previous_raw) noexcept;
     void fill_in_closed_slots(sample_time now) noexcept;
     void record(sample_time when) noexcept;
@@ -185,6 +189,7 @@ private:
     [[nodiscard]] std::int64_t effective_offset() const noexcept;
 
     [[nodiscard]] sample_time  latest_time() const noexcept;
+    [[nodiscard]] sample_time  predicted_time(std::int64_t sequence) const noexcept;
     [[nodiscard]] sample_time  history_at(std::int64_t sequence) const noexcept;
     [[nodiscard]] std::int64_t oldest_sequence() const noexcept;
     [[nodiscard]] std::optional<std::int64_t>
@@ -207,6 +212,10 @@ private:
     std::int64_t               previous_raw_sequence_{-1};
     std::optional<sample_time> previous_raw_interval_;  // set only if that gap held fill-ins
     std::int64_t               fill_ins_since_raw_{0};
+
+    // The interval before an outlier: a pulse more than a quarter period off its prediction,
+    // waiting for the next pulse to tell a hiccup from a tempo change.
+    std::optional<sample_time> outlier_interval_;
 
     std::optional<sample_time> pending_reset_;
     std::uint32_t              resets_applied_{0};

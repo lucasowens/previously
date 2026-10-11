@@ -240,21 +240,33 @@ TEST_CASE("a stray edge before the clock starts does not deafen the tracker")
 TEST_CASE("MIDI tempo is accurate within the first beat")
 {
     // While the fit has only a few points, least-squares gains average them optimally. Steady
-    // gains alone would leave the first, noisy interval in the tempo for many beats.
-    double worst_period_error = 0.0;
+    // gains alone leave the first, noisy interval in the tempo for much of the beat. The
+    // difference is largest early on (measured over 200 seeds: after 9 pulses the worst error is
+    // 8.4 samples with least squares, against a mean of 18 without), so check there as well as
+    // at the end of the beat.
+    double worst_after_9  = 0.0;
+    double worst_after_24 = 0.0;
 
     for (std::uint32_t seed = 1; seed <= 20; ++seed) {
-        tracked_clock clock{clock_tracker_config::midi(rate_48k)};
-        feed(clock.tracker, with_jitter(steady_clock(0.0, midi_period, 24), 48.0, seed));
+        const auto measured = with_jitter(steady_clock(0.0, midi_period, 24), 48.0, seed);
 
-        worst_period_error =
-            std::max(worst_period_error,
+        tracked_clock clock{clock_tracker_config::midi(rate_48k)};
+
+        feed(clock.tracker, std::span{measured}.first(9));
+        worst_after_9 =
+            std::max(worst_after_9,
+                     std::abs(error_in_samples(known(clock.tracker.pulse_period()), midi_period)));
+
+        feed(clock.tracker, std::span{measured}.subspan(9));
+        worst_after_24 =
+            std::max(worst_after_24,
                      std::abs(error_in_samples(known(clock.tracker.pulse_period()), midi_period)));
     }
 
-    // A least-squares fit of 24 points with this jitter has a slope error of about 0.8 samples
-    // (one standard deviation); without it the error is tens of samples.
-    CHECK(worst_period_error < 4.0);
+    // One standard deviation of a least-squares slope with this jitter: about 3.6 samples for 9
+    // points, 0.8 for 24.
+    CHECK(worst_after_9 < 12.0);
+    CHECK(worst_after_24 < 4.0);
 }
 
 // ---- Steady tracking and noise ------------------------------------------------------------------
@@ -370,22 +382,90 @@ TEST_CASE("slower clocks are counted pulse for pulse, however much slower")
     }
 }
 
-TEST_CASE("a tempo halving is a tempo change from its very first pulse")
+TEST_CASE("a tempo halving is counted exactly and confirmed by its second pulse")
 {
-    // The first pulse at the new tempo arrives about two periods after the last. That must read
-    // as a tempo change immediately, never as a stopped clock with a filled-in phantom pulse, on
-    // either side of exactly 2P.
+    // The first pulse at the new tempo arrives about two periods after the last, on either side
+    // of exactly 2P. It must never read as a stopped clock with a filled-in phantom pulse. One
+    // pulse can't distinguish a slowdown from a hiccup, so the tempo is kept until the second
+    // pulse agrees (issue #3); then the tempo changes.
     for (const double factor : {2.0 - 0.000'005, 2.0 + 0.000'005, 2.2}) {
         CAPTURE(factor);
 
         tracked_clock clock{clock_tracker_config::gate(rate_48k)};
-        change_tempo(clock.tracker, 100, gate_period * factor, 1);
+        const double  first = change_tempo(clock.tracker, 100, gate_period * factor, 1);
 
         CHECK(clock.tracker.latest_pulse() == 100);
         CHECK(clock.tracker.state() == clock_state::locked);
+        CHECK(clock.tracker.pulse_period() == at(gate_period));
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_time(100)), first)) < 0.01);
+
+        clock.tracker.pulse(at(first + (gate_period * factor)));
+
+        CHECK(clock.tracker.latest_pulse() == 101);
         CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()),
                                         gate_period * factor)) < 0.01);
     }
+}
+
+TEST_CASE("a single late or early pulse in a steady clock changes nothing (issue #3)")
+{
+    // One pulse off by 0.3 of a period (a jitter spike, a MIDI-to-CV hiccup), then back on the
+    // grid. The tempo must not change, the odd pulse is recorded where it really happened, and
+    // the next pulse is tracked exactly.
+    for (const double offset : {0.3, -0.3}) {
+        CAPTURE(offset);
+
+        std::vector<double> times = steady_clock(0.0, gate_period, 60);
+        times[40] += gate_period * offset;
+
+        tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+        feed(clock.tracker, std::span{times}.first(41));
+
+        CHECK(clock.tracker.pulse_period() == at(gate_period));
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_time(40)), times[40])) < 0.01);
+
+        // A time just after the odd pulse belongs to it, even though the next prediction is more
+        // than a period away after an early pulse.
+        CHECK(clock.tracker.pulse_at_or_before(at(times[40] + 1.0)) == 40);
+
+        // The grid keeps its phase through the hiccup: pulse 41 is still predicted on the old
+        // grid (which matters if the clock stops right here and the grid freewheels).
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_time(41)), gate_period * 41.0)) <
+              0.01);
+
+        feed(clock.tracker, std::span{times}.subspan(41));
+
+        CHECK(clock.tracker.latest_pulse() == 59);
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period)) < 0.01);
+        CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_time(41)), times[41])) < 0.01);
+        CHECK(max_error(clock.tracker, times, 41) < 0.01);
+    }
+}
+
+TEST_CASE("two identical hiccups far apart are still hiccups")
+{
+    // Each hiccup is judged on its own: the interval remembered from the first must be forgotten
+    // once the clock is back on the grid, or the second would "agree" with it and look like a
+    // tempo change.
+    std::vector<double> times = steady_clock(0.0, gate_period, 80);
+    times[30] += gate_period * 0.3;
+    times[60] += gate_period * 0.3;
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+
+    // The tempo must hold at every pulse, not just come back by the end.
+    for (std::size_t i = 0; i < times.size(); ++i) {
+        clock.tracker.pulse(at(times[i]));
+
+        if (i >= 2) {
+            CAPTURE(i);
+            CHECK(std::abs(error_in_samples(known(clock.tracker.pulse_period()), gate_period)) <
+                  0.01);
+        }
+    }
+
+    CHECK(clock.tracker.latest_pulse() == 79);
+    CHECK(max_error(clock.tracker, times, 61) < 0.01);
 }
 
 TEST_CASE("faster clocks are counted pulse for pulse, including exact doubling")
