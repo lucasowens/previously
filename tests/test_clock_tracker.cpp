@@ -166,28 +166,33 @@ rms_error(const clock_tracker& tracker, std::span<const double> truth, std::size
     return std::sqrt(squares / static_cast<double>(truth.size()));
 }
 
-/// Feeds a steady clock, then `count` pulses at `new_period`, calling advance() every 256
-/// samples as an audio engine would. Returns the time of the last pulse.
+/// Feeds pulses as an audio engine would: advance() at the end of every 256-sample block,
+/// and each pulse in the block that contains it.
+void feed_with_blocks(clock_tracker& tracker, std::span<const double> times)
+{
+    std::int64_t block = 0;
+
+    for (const double time : times) {
+        for (; static_cast<double>(block + 1) * 256.0 < time; ++block) {
+            tracker.advance(at(static_cast<double>(block + 1) * 256.0));
+        }
+        tracker.pulse(at(time));
+    }
+}
+
+/// Feeds a steady clock, then `count` pulses at `new_period`, with advance() every 256
+/// samples. Returns the time of the last pulse.
 double change_tempo(clock_tracker& tracker, std::size_t before, double new_period, int count)
 {
-    const auto steady = steady_clock(0.0, gate_period, before);
-    feed(tracker, steady);
-
-    double time = steady.back();
+    std::vector<double> times = steady_clock(0.0, gate_period, before);
 
     for (int i = 0; i < count; ++i) {
-        const double next = time + new_period;
-
-        // One advance() per 256-sample audio block between the pulses.
-        for (int block = 1; time + (256.0 * block) < next; ++block) {
-            tracker.advance(at(time + (256.0 * block)));
-        }
-
-        tracker.pulse(at(next));
-        time = next;
+        times.push_back(times.back() + new_period);
     }
 
-    return time;
+    feed_with_blocks(tracker, times);
+
+    return times.back();
 }
 
 // ---- Acquisition ------------------------------------------------------------------------------
@@ -505,19 +510,6 @@ TEST_CASE("a phase shift at constant tempo re-anchors within two pulses")
 
         CHECK(clock.tracker.latest_pulse() == 39);
         CHECK(max_error(clock.tracker, times, 21) < 0.01);
-    }
-}
-
-/// Feeds pulses with advance() every 256 samples between them, as an audio engine would.
-void feed_with_blocks(clock_tracker& tracker, std::span<const double> times)
-{
-    std::int64_t block = 0;
-
-    for (const double time : times) {
-        for (; static_cast<double>(block + 1) * 256.0 < time; ++block) {
-            tracker.advance(at(static_cast<double>(block + 1) * 256.0));
-        }
-        tracker.pulse(at(time));
     }
 }
 
