@@ -59,10 +59,13 @@ clock_tracker::clock_tracker(const clock_tracker_config& config) noexcept
 
 void clock_tracker::pulse(sample_time when) noexcept
 {
+    // A pulse at `when` proves that time has reached `when`, so settle any freewheel slots that
+    // closed before it. Correct results then never depend on how often advance() is called.
+    advance(when);
+
     switch (state_) {
         case clock_state::no_clock:
             start_acquisition(when);
-            latest_raw_ = when;
             break;
 
         case clock_state::acquiring: {
@@ -74,7 +77,6 @@ void clock_tracker::pulse(sample_time when) noexcept
 
             period_        = interval;
             pulses_in_fit_ = 2;
-            latest_raw_    = when;
             record(when);
             predicted_ = when + period_;
             state_     = clock_state::locked;
@@ -89,8 +91,6 @@ void clock_tracker::pulse(sample_time when) noexcept
 
             const sample_time error = when - predicted_;
 
-            latest_raw_ = when;
-
             if (absolute(error) > divide(period_, 4)) {
                 reacquire(when);
             }
@@ -102,16 +102,22 @@ void clock_tracker::pulse(sample_time when) noexcept
             break;
         }
     }
+
+    // Reached only for an accepted pulse, which is now the latest recorded one.
+    latest_raw_          = when;
+    latest_raw_sequence_ = latest_sequence_;
 }
 
 void clock_tracker::reset(sample_time when) noexcept
 {
     // The reset and the first pulse of the bar are usually simultaneous, but they can be
     // delivered in either order. If the pulse came first, relabel it; otherwise label the next.
-    // Compare against the raw edge, not the filtered time: with a low phase gain the filtered
-    // time can sit tens of samples away from when the edge really arrived.
-    const bool coincides_with_latest =
-        latest_sequence_ >= 0 && absolute(when - latest_raw_) <= reset_window_;
+    //
+    // "Simultaneous" is judged against the latest pulse's raw edge: the filtered time can sit
+    // tens of samples away with a low phase gain, and a freewheel fill-in has no raw edge at all.
+    const bool coincides_with_latest = latest_sequence_ >= 0 &&
+                                       latest_raw_sequence_ == latest_sequence_ &&
+                                       absolute(when - latest_raw_) <= reset_window_;
 
     if (coincides_with_latest) {
         index_offset_  = latest_sequence_;
@@ -133,7 +139,12 @@ void clock_tracker::advance(sample_time now) noexcept
         return;
     }
 
-    for (int added = 0; added < max_freewheel_pulses_per_advance && predicted_ <= now; ++added) {
+    // Fill in a pulse only once its slot has closed. Until half a period after the slot, a real
+    // pulse may still arrive for it (a clock returning a few samples late), and it must win.
+    const sample_time slot_window = divide(period_, 2);
+
+    for (int added = 0; added < max_freewheel_pulses_per_advance && predicted_ + slot_window <= now;
+         ++added) {
         record(predicted_);
         predicted_ += period_;
     }

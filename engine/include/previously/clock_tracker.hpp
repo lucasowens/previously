@@ -33,7 +33,8 @@
 //   - an error of more than a quarter period is a tempo change: the tracker re-acquires from
 //     this pulse, and the pulse count continues
 //   - silence for two periods means the clock stopped: the tracker freewheels at the last tempo,
-//     adding pulses on schedule so the grid keeps running, and locks again when pulses return
+//     filling in pulses on schedule so the grid keeps running (each one committed only after its
+//     slot closes, so a real pulse arriving late still wins), and locks again when pulses return
 //
 // Under a steady tempo ramp the tracker lags slightly; the gate default keeps that well below
 // one sample (tested). See docs/learning/clock-tracking.md.
@@ -98,7 +99,8 @@ public:
     void pulse(sample_time when) noexcept;
 
     /// The reset input fired: the pulse at (or immediately after) `when` becomes pulse 0, which
-    /// is the start of bar 0.
+    /// is the start of bar 0. While freewheeling, that can be the next filled-in pulse: a reset
+    /// on a stopped clock restarts the running grid.
     void reset(sample_time when) noexcept;
 
     /// Time has moved on to `now` (call once per audio block). Detects a stopped clock and keeps
@@ -147,7 +149,10 @@ private:
     std::int64_t                              latest_sequence_{-1};
     std::int64_t                              index_offset_{0};
 
-    sample_time latest_raw_;  // the latest pulse exactly as measured (reset matching uses this)
+    // The latest real pulse exactly as measured, and which pulse it is (reset matching uses
+    // these; freewheel fill-ins have no raw time).
+    sample_time  latest_raw_;
+    std::int64_t latest_raw_sequence_{-1};
 
     sample_time  period_;
     sample_time  predicted_;

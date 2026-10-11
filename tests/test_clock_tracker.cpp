@@ -335,7 +335,7 @@ TEST_CASE("when the clock stops the grid freewheels, then locks again in phase")
         tracker.advance(at(truth[static_cast<std::size_t>(i)] + 1.0));
     }
     CHECK(tracker.state() == clock_state::freewheeling);
-    CHECK(tracker.latest_pulse() == 199);
+    CHECK(tracker.latest_pulse() == 198);  // slot 199 stays open until half a period after it
 
     for (int i = 200; i < 300; ++i) {
         tracker.pulse(at(truth[static_cast<std::size_t>(i)]));
@@ -344,6 +344,33 @@ TEST_CASE("when the clock stops the grid freewheels, then locks again in phase")
     CHECK(tracker.state() == clock_state::locked);
     CHECK(tracker.latest_pulse() == 299);
     CHECK(max_error(tracker, truth, 0) < 0.01);
+}
+
+TEST_CASE("a clock returning slightly late after freewheeling keeps its real timing")
+{
+    // While freewheeling, the tracker fills in pulses on schedule. If the real clock returns a few
+    // samples after a scheduled slot, that edge is the real pulse for that slot: it must be used,
+    // not rejected as a double trigger of the filled-in pulse.
+    const auto truth = steady_clock(0.0, gate_period, 300);
+
+    clock_tracker tracker{clock_tracker_config::gate(rate_48k)};
+
+    for (int i = 0; i < 100; ++i) {
+        tracker.pulse(at(truth[static_cast<std::size_t>(i)]));
+    }
+
+    // Time passes block by block; the clock is silent through pulse 199.
+    for (int i = 100; i < 200; ++i) {
+        tracker.advance(at(truth[static_cast<std::size_t>(i)] + 1.0));
+    }
+
+    // The clock returns 3 samples late, and the next block's advance follows it.
+    tracker.advance(at(truth[200] + 1.0));
+    tracker.pulse(at(truth[200] + 3.0));
+
+    CHECK(tracker.state() == clock_state::locked);
+    CHECK(tracker.latest_pulse() == 200);
+    CHECK(std::abs(error_in_samples(known(tracker.pulse_time(200)), truth[200] + 3.0)) < 0.5);
 }
 
 TEST_CASE("a reset makes the coincident pulse the start of bar 0, in either order")
