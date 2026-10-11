@@ -16,6 +16,11 @@ ENGINE_BUILD := ../build/rack/engine
 FLAGS += -isystem $(RACK_DIR)/include -isystem $(RACK_DIR)/dep/include
 FLAGS += -I../engine/include
 FLAGS += -Wall -Wextra -Wpedantic -Wshadow -Wdouble-promotion -Wold-style-cast -Werror
+
+# Clang's -Wshadow skips base-class members; GCC's does not (see cmake/previously_options.cmake).
+ifneq (,$(findstring clang,$(shell $(CXX) --version)))
+	FLAGS += -Wshadow-all
+endif
 SOURCES += $(wildcard src/*.cpp)
 
 LDFLAGS += $(ENGINE_BUILD)/libpreviously_engine.a $(ENGINE_BUILD)/libpreviously_host_support.a

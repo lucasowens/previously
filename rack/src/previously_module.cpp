@@ -99,22 +99,23 @@ class previously_widget : public rack::ModuleWidget {
 public:
     using jack = rack::componentlibrary::PJ301MPort;
 
-    explicit previously_widget(previously_module* module)
+    explicit previously_widget(previously_module* instance)
     {
-        setModule(module);
+        // "instance", not "module": ModuleWidget already has a member named module.
+        setModule(instance);
         setPanel(rack::createPanel(rack::asset::plugin(pluginInstance, "res/previously.svg")));
 
         addInput(rack::createInputCentered<jack>(to_pixels(in_left_jack),
-                                                 module,
+                                                 instance,
                                                  previously_module::in_left_input));
         addInput(rack::createInputCentered<jack>(to_pixels(in_right_jack),
-                                                 module,
+                                                 instance,
                                                  previously_module::in_right_input));
         addOutput(rack::createOutputCentered<jack>(to_pixels(out_left_jack),
-                                                   module,
+                                                   instance,
                                                    previously_module::out_left_output));
         addOutput(rack::createOutputCentered<jack>(to_pixels(out_right_jack),
-                                                   module,
+                                                   instance,
                                                    previously_module::out_right_output));
     }
 };
