@@ -16,6 +16,16 @@ static_assert(sample_time::from_samples(samples{2}).ticks() == 131'072);
 static_assert(sample_time::from_samples(samples{3}) - sample_time::from_samples(samples{1}) ==
               sample_time::from_samples(samples{2}));
 
+static_assert(sample_time::from_samples(samples{10}) / 4 == sample_time::from_ticks(163'840));
+static_assert(abs(sample_time::from_ticks(-5)) == sample_time::from_ticks(5));
+static_assert(abs(sample_time::from_ticks(5)) == sample_time::from_ticks(5));
+static_assert(sample_time::from_samples_float(-0.5F) == sample_time::from_ticks(-32'768));
+
+// round_to_int64 rounds halves away from zero.
+static_assert(round_to_int64(2.5F) == 3);
+static_assert(round_to_int64(-2.5F) == -3);
+static_assert(round_to_int64(2.4F) == 2);
+
 // floor_divide rounds toward minus infinity in every sign combination.
 static_assert(floor_divide(7, 2) == 3);
 static_assert(floor_divide(-7, 2) == -4);

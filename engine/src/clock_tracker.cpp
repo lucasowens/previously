@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Previously — engine: clock tracker. The header explains the approach.
+// Previously — engine: clock tracker. The header explains the approach and the rules.
 
 #include "previously/clock_tracker.hpp"
 
@@ -11,16 +11,44 @@ namespace previously {
 
 namespace {
 
-/// Shortest believable pulse interval while acquiring: 0.5 ms is faster than 24 PPQN at
-/// 2,000 BPM, so anything shorter is noise.
-constexpr seconds min_acquisition_interval{0.0005F};
+// Windows in real time, converted to samples using the configured rate.
+
+/// Contact bounce and double triggers settle within a few milliseconds. 4 ms is still shorter
+/// than any musical pulse interval: 24 PPQN at 300 BPM is 8.3 ms.
+constexpr seconds double_trigger_window{0.004F};
+
+/// Slower than any musical pulse (1 PPQN at 15 BPM). A longer first interval means the first
+/// edge was stray.
+constexpr seconds max_acquisition_interval{4.0F};
 
 /// How close a reset must be to a pulse to count as the same moment.
 constexpr seconds reset_coincidence_window{0.002F};
 
-/// Upper bound on pulses added in one advance() call while freewheeling, so the call is
-/// bounded even if the caller skips a long stretch of time.
-constexpr int max_freewheel_pulses_per_advance = 64;
+// Rules measured in pulse periods.
+
+/// A prediction error beyond a quarter period is a tempo change, not jitter.
+constexpr std::int64_t tempo_change_divisor = 4;
+
+/// A freewheel slot stays open for half a period after its time, so a late real pulse can claim
+/// it. The same half period divides "late pulse" from "early next pulse".
+constexpr std::int64_t slot_window_divisor = 2;
+
+/// Two gaps whose lengths differ by at most a quarter of the first are "the same length".
+constexpr std::int64_t same_interval_divisor = 4;
+
+/// Silence for this long means the clock stopped. Above 2 periods with a margin wider than the
+/// quarter-period tolerance, so a tempo exactly halving can never be mistaken for a stop.
+[[nodiscard]] constexpr sample_time stopped_after(sample_time period) noexcept
+{
+    return (period * 2) + (period / 2);
+}
+
+/// Indices further than this from the present are refused rather than risk overflow. 2^40
+/// pulses is centuries of clock at any tempo.
+constexpr std::int64_t max_index_distance = 1'099'511'627'776;
+
+/// The smallest allowed phase gain: below this the tracker would barely move.
+constexpr float min_phase_gain = 0.01F;
 
 /// Multiplies a time by a gain, rounding to the nearest tick. Gains and errors are small, so
 /// float precision is ample here; the result goes back into exact integer time.
@@ -29,124 +57,138 @@ constexpr int max_freewheel_pulses_per_advance = 64;
     return sample_time::from_samples_float(value.to_samples_float() * gain);
 }
 
-[[nodiscard]] sample_time absolute(sample_time value) noexcept
+/// A real-time window as sample time, never shorter than one sample (at very low sample rates a
+/// short window would otherwise round to zero).
+[[nodiscard]] sample_time window(seconds duration, sample_rate rate) noexcept
 {
-    return value < sample_time{} ? -value : value;
+    const samples whole = std::max(to_samples(duration, rate), samples{1});
+
+    return sample_time::from_samples(whole);
 }
 
-/// sample_time divided by a whole number, rounding toward zero.
-[[nodiscard]] sample_time divide(sample_time value, std::int64_t divisor) noexcept
+/// Integer division rounding toward plus infinity.
+[[nodiscard]] constexpr std::int64_t ceil_divide(std::int64_t numerator,
+                                                 std::int64_t denominator) noexcept
 {
-    return sample_time::from_ticks(value.ticks() / divisor);
+    return -floor_divide(-numerator, denominator);
 }
 
 }  // namespace
 
-clock_tracker::clock_tracker(const clock_tracker_config& config) noexcept
-    : config_{config},
-      min_acquisition_interval_{
-          sample_time::from_samples(to_samples(min_acquisition_interval, config.rate)),
-      },
-      reset_window_{sample_time::from_samples(to_samples(reset_coincidence_window, config.rate))},
-      steady_alpha_{config.phase_gain},
-      steady_beta_{(config.phase_gain * config.phase_gain) / (2.0F - config.phase_gain)}
+clock_tracker::clock_tracker(const clock_tracker_config& config,
+                             std::span<sample_time>      history) noexcept
+    : history_{history},
+      pulses_per_beat_{std::max<std::int64_t>(config.pulses_per_beat, 1)},
+      pulses_per_bar_{pulses_per_beat_ * std::max<std::int64_t>(config.beats_per_bar, 1)},
+      steady_alpha_{std::clamp(config.phase_gain, min_phase_gain, 1.0F)},
+      steady_beta_{(steady_alpha_ * steady_alpha_) / (2.0F - steady_alpha_)},
+      double_trigger_window_{window(double_trigger_window, config.rate)},
+      max_acquisition_interval_{window(max_acquisition_interval, config.rate)},
+      reset_window_{window(reset_coincidence_window, config.rate)}
 {
+    // Bad settings are programming errors, caught here in debug builds. They are also clamped
+    // above, so a release build still behaves sanely.
     expects(config.rate.hz() > 0U);
     expects(config.pulses_per_beat > 0);
     expects(config.beats_per_bar > 0);
     expects(config.phase_gain > 0.0F && config.phase_gain <= 1.0F);
+    expects(history.size() >= 2);
 }
 
 void clock_tracker::pulse(sample_time when) noexcept
 {
-    // A pulse at `when` proves that time has reached `when`, so settle any freewheel slots that
-    // closed before it. Correct results then never depend on how often advance() is called.
+    if (history_.empty()) {
+        return;
+    }
+
+    // Every state except no_clock has seen a real pulse, so `previous_raw` is a real edge
+    // wherever it is used below; the fallback only serves no_clock, which ignores it.
+    const sample_time previous_raw = latest_raw_.value_or(when);
+
+    expects(when >= previous_raw);
+
+    // A pulse at `when` proves that time has reached `when`: settle the freewheel slots that
+    // closed before it, so the result never depends on how often advance() is called.
     advance(when);
+
+    if (latest_raw_.has_value() && when - previous_raw < double_trigger_window_) {
+        return;  // a double trigger, not a pulse
+    }
 
     switch (state_) {
         case clock_state::no_clock:
-            start_acquisition(when);
+            pulses_in_fit_ = 1;
+            record(when);
+            state_ = clock_state::acquiring;
             break;
 
         case clock_state::acquiring: {
-            const sample_time interval = when - latest_time();
+            const sample_time interval = when - previous_raw;
 
-            if (interval < min_acquisition_interval_) {
-                return;  // glitch: too soon after the first pulse to be a clock
+            if (interval > max_acquisition_interval_) {
+                // The first edge was stray (a cable being patched, a power-on glitch): this
+                // pulse takes its place, and acquisition starts again from here.
+                history_[static_cast<std::size_t>(latest_sequence_) % history_.size()] = when;
             }
-
-            period_        = interval;
-            pulses_in_fit_ = 2;
-            record(when);
-            predicted_ = when + period_;
-            state_     = clock_state::locked;
+            else {
+                lock_on_interval(when, interval);
+            }
             break;
         }
 
-        case clock_state::locked:
-        case clock_state::freewheeling: {
-            if (when - latest_time() < divide(period_, 2)) {
-                return;  // glitch: a double trigger, not a pulse
-            }
-
+        case clock_state::locked: {
             const sample_time error = when - predicted_;
 
-            if (absolute(error) > divide(period_, 4)) {
-                reacquire(when);
+            if (abs(error) > period_ / tempo_change_divisor) {
+                lock_on_interval(when, when - previous_raw);
             }
             else {
                 track(error);
             }
-
-            state_ = clock_state::locked;
             break;
         }
+
+        case clock_state::freewheeling:
+            return_from_freewheel(when, previous_raw);
+            break;
     }
 
-    // Reached only for an accepted pulse, which is now the latest recorded one.
-    latest_raw_          = when;
-    latest_raw_sequence_ = latest_sequence_;
+    note_real_pulse(when);
 }
 
 void clock_tracker::reset(sample_time when) noexcept
 {
-    // The reset and the first pulse of the bar are usually simultaneous, but they can be
-    // delivered in either order. If the pulse came first, relabel it; otherwise label the next.
-    //
-    // "Simultaneous" is judged against the latest pulse's raw edge: the filtered time can sit
-    // tens of samples away with a low phase gain, and a freewheel fill-in has no raw edge at all.
-    const bool coincides_with_latest = latest_sequence_ >= 0 &&
-                                       latest_raw_sequence_ == latest_sequence_ &&
-                                       absolute(when - latest_raw_) <= reset_window_;
+    // Simultaneous with the latest real pulse, delivered in either order. Judged against the raw
+    // edge: the filtered time can sit tens of samples away with a low phase gain.
+    if (latest_raw_ && abs(when - *latest_raw_) <= reset_window_) {
+        index_offset_ = latest_raw_sequence_;
+        pending_reset_.reset();
+        return;
+    }
 
-    if (coincides_with_latest) {
-        index_offset_  = latest_sequence_;
-        reset_pending_ = false;
+    // Older than the latest pulse, so delivered late: label the first pulse at or after it.
+    if (latest_sequence_ >= 0 && when < latest_time()) {
+        const auto before =
+            sequence_at_or_before(when - reset_window_ - sample_time::from_ticks(1));
+
+        index_offset_ = before ? *before + 1 : oldest_sequence();
+        pending_reset_.reset();
+        return;
     }
-    else {
-        reset_time_    = when;
-        reset_pending_ = true;
-    }
+
+    // In the future: label the next pulse, real or filled in.
+    pending_reset_ = when;
 }
 
 void clock_tracker::advance(sample_time now) noexcept
 {
-    if (state_ == clock_state::locked && now - latest_time() > period_ * 2) {
+    if (state_ == clock_state::locked && latest_raw_ &&
+        now - *latest_raw_ > stopped_after(period_)) {
         state_ = clock_state::freewheeling;
     }
 
-    if (state_ != clock_state::freewheeling) {
-        return;
-    }
-
-    // Fill in a pulse only once its slot has closed. Until half a period after the slot, a real
-    // pulse may still arrive for it (a clock returning a few samples late), and it must win.
-    const sample_time slot_window = divide(period_, 2);
-
-    for (int added = 0; added < max_freewheel_pulses_per_advance && predicted_ + slot_window <= now;
-         ++added) {
-        record(predicted_);
-        predicted_ += period_;
+    if (state_ == clock_state::freewheeling) {
+        fill_in_closed_slots(now);
     }
 }
 
@@ -157,7 +199,12 @@ clock_state clock_tracker::state() const noexcept
 
 std::int64_t clock_tracker::pulses_per_bar() const noexcept
 {
-    return config_.pulses_per_beat * config_.beats_per_bar;
+    return pulses_per_bar_;
+}
+
+std::size_t clock_tracker::history_capacity() const noexcept
+{
+    return history_.size();
 }
 
 std::optional<sample_time> clock_tracker::pulse_period() const noexcept
@@ -172,7 +219,7 @@ std::optional<sample_time> clock_tracker::pulse_period() const noexcept
 std::optional<sample_time> clock_tracker::beat_period() const noexcept
 {
     if (const auto period = pulse_period()) {
-        return *period * config_.pulses_per_beat;
+        return *period * pulses_per_beat_;
     }
 
     return std::nullopt;
@@ -189,7 +236,9 @@ std::optional<std::int64_t> clock_tracker::latest_pulse() const noexcept
 
 std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const noexcept
 {
-    if (latest_sequence_ < 0) {
+    const auto latest = latest_pulse();
+
+    if (!latest || index > *latest + max_index_distance || index < *latest - max_index_distance) {
         return std::nullopt;
     }
 
@@ -214,52 +263,17 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
 
 std::optional<std::int64_t> clock_tracker::pulse_at_or_before(sample_time when) const noexcept
 {
-    if (latest_sequence_ < 0) {
-        return std::nullopt;
+    if (const auto sequence = sequence_at_or_before(when)) {
+        return *sequence - index_offset_;
     }
 
-    // At or after the latest pulse: count whole periods forward.
-    if (when >= latest_time()) {
-        const auto period = pulse_period();
-
-        if (!period) {
-            return latest_sequence_ - index_offset_;
-        }
-
-        const std::int64_t periods_ahead =
-            floor_divide((when - latest_time()).ticks(), period->ticks());
-
-        return latest_sequence_ + periods_ahead - index_offset_;
-    }
-
-    // In the past: binary search the history, which is sorted by time.
-    std::int64_t low  = oldest_sequence();
-    std::int64_t high = latest_sequence_;
-
-    if (when < history_at(low)) {
-        return std::nullopt;
-    }
-
-    // Invariant: history_at(low) <= when < history_at(high). Halves the range each step, so
-    // this runs at most log2(history_capacity) = 11 times.
-    while (high - low > 1) {
-        const std::int64_t middle = low + ((high - low) / 2);
-
-        if (history_at(middle) <= when) {
-            low = middle;
-        }
-        else {
-            high = middle;
-        }
-    }
-
-    return low - index_offset_;
+    return std::nullopt;
 }
 
 std::optional<std::int64_t> clock_tracker::bar_at_or_before(sample_time when) const noexcept
 {
     if (const auto pulse_index = pulse_at_or_before(when)) {
-        return floor_divide(*pulse_index, pulses_per_bar());
+        return floor_divide(*pulse_index, pulses_per_bar_);
     }
 
     return std::nullopt;
@@ -267,24 +281,29 @@ std::optional<std::int64_t> clock_tracker::bar_at_or_before(sample_time when) co
 
 std::optional<sample_time> clock_tracker::bar_start(std::int64_t bar) const noexcept
 {
-    return pulse_time(bar * pulses_per_bar());
+    const std::int64_t max_bar = max_index_distance / pulses_per_bar_;
+
+    if (bar > max_bar || bar < -max_bar) {
+        return std::nullopt;
+    }
+
+    return pulse_time(bar * pulses_per_bar_);
 }
 
-void clock_tracker::start_acquisition(sample_time when) noexcept
+void clock_tracker::lock_on_interval(sample_time when, sample_time interval) noexcept
 {
-    pulses_in_fit_ = 1;
-    record(when);
-    state_ = clock_state::acquiring;
-}
-
-void clock_tracker::reacquire(sample_time when) noexcept
-{
-    // The tempo changed: restart the fit from the interval since the previous pulse. The pulse
+    // The tempo is the interval between two real edges. The fit restarts from here; the pulse
     // count carries on, so bars keep their numbers.
-    period_        = when - latest_time();
+    //
+    // Every caller has already rejected intervals inside the double-trigger window, and that
+    // window is at least one sample, so the period can never be zero.
+    expects(interval >= double_trigger_window_);
+
+    period_        = interval;
     pulses_in_fit_ = 2;
     record(when);
     predicted_ = when + period_;
+    state_     = clock_state::locked;
 }
 
 void clock_tracker::track(sample_time error) noexcept
@@ -302,20 +321,113 @@ void clock_tracker::track(sample_time error) noexcept
 
     const sample_time corrected = predicted_ + scale(error, alpha);
 
-    period_ += scale(error, beta);
+    // Defensive floor, unreachable with real input: a correction is at most a quarter period and
+    // real intervals are at least the double-trigger window apart. It stays because a zero
+    // period would be a division by zero on the device.
+    period_ = std::max(period_ + scale(error, beta), double_trigger_window_);
     record(corrected);
     predicted_ = corrected + period_;
+}
+
+void clock_tracker::return_from_freewheel(sample_time when, sample_time previous_raw) noexcept
+{
+    const sample_time raw_interval = when - previous_raw;
+
+    // Two consecutive long gaps of the same length: the clock slowed down, it did not stop.
+    // Retire the fill-ins by rewinding to the real pulse before the previous one, then re-record
+    // both real pulses at the new tempo.
+    const bool clock_slowed =
+        previous_raw_interval_ && abs(raw_interval - *previous_raw_interval_) <=
+                                      *previous_raw_interval_ / same_interval_divisor;
+
+    if (clock_slowed && previous_raw_sequence_ >= 0) {
+        latest_sequence_ = previous_raw_sequence_;
+        record(previous_raw);
+        latest_raw_sequence_ = latest_sequence_;
+        lock_on_interval(when, raw_interval);
+        return;
+    }
+
+    // The clock restarted. This pulse claims the current slot and re-anchors the phase only: it
+    // may arrive anywhere in its slot, so the time since the last fill-in measures phase, not
+    // tempo. The next real pulse measures the tempo from two real edges (the k = 2 least-squares
+    // gains are exactly 1).
+    record(when);
+    predicted_     = when + period_;
+    pulses_in_fit_ = 1;
+    state_         = clock_state::locked;
+}
+
+void clock_tracker::fill_in_closed_slots(sample_time now) noexcept
+{
+    const sample_time open_for = period_ / slot_window_divisor;
+
+    if (predicted_ + open_for > now) {
+        return;
+    }
+
+    const std::int64_t closed =
+        floor_divide((now - open_for - predicted_).ticks(), period_.ticks()) + 1;
+
+    // Slots older than the history would be overwritten before anyone could read them, so skip
+    // them in O(1). The loop below then runs at most history_capacity() times.
+    const std::int64_t skipped =
+        std::max<std::int64_t>(0, closed - static_cast<std::int64_t>(history_.size()));
+
+    if (skipped > 0) {
+        if (pending_reset_) {
+            const std::int64_t first_at_reset = std::max<std::int64_t>(
+                0,
+                ceil_divide((*pending_reset_ - reset_window_ - predicted_).ticks(),
+                            period_.ticks()));
+
+            if (first_at_reset < skipped) {
+                index_offset_ = latest_sequence_ + 1 + first_at_reset;
+                pending_reset_.reset();
+            }
+        }
+
+        latest_sequence_ += skipped;
+        predicted_ += period_ * skipped;
+    }
+
+    for (std::int64_t slot = skipped; slot < closed; ++slot) {
+        record(predicted_);
+        apply_pending_reset(predicted_, latest_sequence_);
+        predicted_ += period_;
+    }
+
+    fill_ins_since_raw_ += closed;
 }
 
 void clock_tracker::record(sample_time when) noexcept
 {
     ++latest_sequence_;
-    history_[static_cast<std::size_t>(latest_sequence_) % history_capacity] = when;
+    history_[static_cast<std::size_t>(latest_sequence_) % history_.size()] = when;
+}
 
-    if (reset_pending_ && when >= reset_time_) {
-        index_offset_  = latest_sequence_;
-        reset_pending_ = false;
+void clock_tracker::apply_pending_reset(sample_time when, std::int64_t sequence) noexcept
+{
+    if (pending_reset_ && when >= *pending_reset_ - reset_window_) {
+        index_offset_ = sequence;
+        pending_reset_.reset();
     }
+}
+
+void clock_tracker::note_real_pulse(sample_time when) noexcept
+{
+    // Remember a gap's length only when it held fill-ins: that is what return_from_freewheel()
+    // compares to tell a slowed clock from a stopped one.
+    previous_raw_interval_ = (fill_ins_since_raw_ > 0 && latest_raw_)
+                                 ? std::optional<sample_time>{when - *latest_raw_}
+                                 : std::nullopt;
+
+    previous_raw_sequence_ = latest_raw_sequence_;
+    latest_raw_            = when;
+    latest_raw_sequence_   = latest_sequence_;
+    fill_ins_since_raw_    = 0;
+
+    apply_pending_reset(when, latest_sequence_);
 }
 
 sample_time clock_tracker::latest_time() const noexcept
@@ -327,14 +439,55 @@ sample_time clock_tracker::history_at(std::int64_t sequence) const noexcept
 {
     expects(sequence >= oldest_sequence() && sequence <= latest_sequence_);
 
-    return history_[static_cast<std::size_t>(sequence) % history_capacity];
+    return history_[static_cast<std::size_t>(sequence) % history_.size()];
 }
 
 std::int64_t clock_tracker::oldest_sequence() const noexcept
 {
     return std::max<std::int64_t>(0,
-                                  latest_sequence_ - static_cast<std::int64_t>(history_capacity) +
+                                  latest_sequence_ - static_cast<std::int64_t>(history_.size()) +
                                       1);
+}
+
+std::optional<std::int64_t> clock_tracker::sequence_at_or_before(sample_time when) const noexcept
+{
+    if (latest_sequence_ < 0) {
+        return std::nullopt;
+    }
+
+    // At or after the latest pulse: count whole periods forward.
+    if (when >= latest_time()) {
+        const auto period = pulse_period();
+
+        if (!period) {
+            return latest_sequence_;
+        }
+
+        return latest_sequence_ + floor_divide((when - latest_time()).ticks(), period->ticks());
+    }
+
+    // In the past: binary search the history, which is sorted by time.
+    std::int64_t low  = oldest_sequence();
+    std::int64_t high = latest_sequence_;
+
+    if (when < history_at(low)) {
+        return std::nullopt;
+    }
+
+    // Invariant: history_at(low) <= when < history_at(high). Halves the range each step, so it
+    // runs at most log2(history_capacity()) times.
+    while (high - low > 1) {
+        const std::int64_t middle = low + ((high - low) / 2);
+
+        if (history_at(middle) <= when) {
+            low = middle;
+        }
+        else {
+            high = middle;
+        }
+    }
+
+    return low;
 }
 
 }  // namespace previously

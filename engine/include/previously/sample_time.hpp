@@ -12,6 +12,11 @@
 //
 // The same type serves as a point in time ("pulse 12 happened at...") and as a duration ("one
 // beat lasts..."), as std::chrono does with its tick counts.
+//
+// Why not quantity<Tag, Rep> from units.hpp? A quantity is constructed from its value, so
+// sample_time{48'000} would read as 48,000 samples but mean 48,000 ticks (under one sample).
+// Here the raw constructor is private and every way in is named: from_ticks, from_samples,
+// from_samples_float.
 
 #pragma once
 
@@ -61,9 +66,7 @@ public:
     /// offsets and corrections, never for absolute time.
     [[nodiscard]] static constexpr sample_time from_samples_float(float duration) noexcept
     {
-        const float ticks = duration * static_cast<float>(ticks_per_sample);
-
-        return sample_time{static_cast<std::int64_t>(ticks >= 0.0F ? ticks + 0.5F : ticks - 0.5F)};
+        return sample_time{round_to_int64(duration * static_cast<float>(ticks_per_sample))};
     }
 
     [[nodiscard]] constexpr std::int64_t ticks() const noexcept
@@ -126,6 +129,19 @@ public:
                                                          std::int64_t count) noexcept
     {
         return sample_time{duration.ticks_ * count};
+    }
+
+    /// Divides a duration into equal parts (half a period, a quarter beat), rounding toward zero.
+    [[nodiscard]] friend constexpr sample_time operator/(sample_time  duration,
+                                                         std::int64_t parts) noexcept
+    {
+        return sample_time{duration.ticks_ / parts};
+    }
+
+    /// The magnitude of a duration: how far apart, ignoring which comes first.
+    [[nodiscard]] friend constexpr sample_time abs(sample_time duration) noexcept
+    {
+        return duration.ticks_ < 0 ? sample_time{-duration.ticks_} : duration;
     }
 
     [[nodiscard]] friend constexpr bool operator==(const sample_time&,

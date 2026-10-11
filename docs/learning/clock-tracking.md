@@ -163,31 +163,53 @@ increased, and peak within a sensible bound.
 
 ---
 
-## 6. Robustness rules
+## 6. Robustness: only real edges measure tempo
+
+The first version of this section described rules that looked right but broke under scenarios
+I hadn't tried. A code review on PR #1 reproduced five of them:
+
+- a tempo drop of 3× was never acquired
+- a clock returning at a new phase reported a 40% wrong tempo for a beat
+- an exact doubling lost pulses
+- a stray edge deafened the tracker for seconds
+- a reset delivered just before a slightly late edge missed it
+
+They all traced back to one mistake: **filled-in freewheel pulses were being treated as
+measurements.** The rules now follow a single principle:
+
+> **Tempo is only ever measured between two real edges.** Filled-in pulses keep the grid counting;
+> they never measure anything.
 
 | Situation | Detection | Response |
 |---|---|---|
-| Double trigger (a bouncing gate) | Pulse less than ½ period after the previous one | Ignored entirely |
-| Tempo jump | Error more than ¼ period | Re-acquire from this pulse: new period = latest interval. The pulse count continues, so bars keep their numbers. |
-| Clock stopped | No pulse for 2 periods (checked in `advance()`) | **Freewheel:** keep adding pulses at the last tempo so the grid keeps running |
-| Clock restarts | A pulse arrives while freewheeling | If it's on the predicted grid, simply lock again. Otherwise re-acquire. |
-| Reset input | Within 2 ms of a pulse's *raw* edge, either order | That pulse becomes index 0, the start of bar 0 |
+| Double trigger (a bouncing gate) | Less than **4 ms** after the previous real pulse | Ignored. Absolute time, not "half a period", so an exact tempo doubling is never mistaken for bounce. |
+| Stray first edge (patching a cable) | While acquiring, an interval over **4 s** | The stray edge is replaced by this one; acquisition restarts |
+| Tempo change | Prediction error over **¼ period** | Re-acquire from the interval to the previous real pulse. The pulse count continues. |
+| Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. |
+| Clock returns | A real pulse while freewheeling | **Re-anchor phase only:** the pulse may land anywhere in its slot, so the gap measures phase, not tempo. The *next* real pulse measures the tempo from two real edges. |
+| Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. |
+| Very long silence | More slots closed than the history holds | Skipped in O(1); at most `history_capacity()` fill-ins are written |
+| Reset input | Within **2 ms** of a pulse's *raw* edge, delivered before or after it | That pulse becomes index 0. A reset delivered late (after later pulses) labels the first pulse at or after its timestamp, from the history. While freewheeling, the next fill-in can take the label. |
 
-Time windows (the 0.5 ms acquisition floor and the 2 ms reset window) are defined in **seconds**
-and converted using the configured sample rate. A fixed number of samples would silently halve at
-96 kHz. Reset matching compares against the **raw** edge time. With the MIDI preset the filtered
-time can sit tens of samples away from the real edge, so the filtered time is the wrong thing to
-compare against. Both came from code review on PR #1 and have tests that fail against the old
-behaviour.
+**Why 2.5 periods, not 2?** An exact tempo halving delivers its first pulse two periods after the
+last. With the threshold at exactly 2P, jitter decided whether that pulse was "a tempo change" or
+"a stopped clock plus a phantom". A margin wider than the quarter-period tolerance removes the
+knife edge.
 
-A deliberate omission: a *single dropped pulse* isn't synthesized while locked. A pulse arriving
-one period late looks exactly like the tempo halving, and halving tempo is a common musical move.
-Real gate cables don't drop pulses, so the tracker treats it as a tempo change.
+**Timing contract.** Callers deliver pulses in time order, and deliver each audio block's pulses
+*before* calling `advance()` for the end of that block. `pulse(when)` also advances to `when`
+itself, so the result never depends on how often `advance()` runs. A test pins this down.
+
+**History storage belongs to the owner.** The history (16 KB for 2,048 pulses) is a `std::span`
+handed in by whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs
+256 entries at 4 PPQN but 1,536 at 24 PPQN.
 
 All loops are bounded:
 
-- The history search is a binary search: at most 11 steps for 2,048 entries.
-- Freewheeling adds at most 64 pulses per `advance()` call.
+| Loop | Bound |
+|---|---|
+| History binary search | At most log₂(capacity) steps |
+| Freewheel fill-ins per call | At most the history capacity |
 
 This is the realtime rule from the coding standard (§3.3), and a test checks that tracking never
 allocates.
@@ -196,21 +218,41 @@ allocates.
 
 ## 7. How we know the tests are good: mutation testing by hand
 
-A passing test suite only proves something if it would *fail* on wrong code. So I planted six bugs
-in `clock_tracker.cpp`, one at a time, and ran the suite against each:
+A passing test suite only proves something if it would *fail* on wrong code. So each mechanism was
+broken on purpose, one at a time, and the suite run against it.
+
+**Round 1** (the first version):
 
 | Planted bug | First result | Action |
 |---|---|---|
-| Tempo never updates (β = 0) | Caught (3 tests) | — |
+| Tempo never updates (β = 0) | Caught | — |
 | Bars use truncating `/` instead of `floor_divide` | **Survived** | Added "pulses before a reset belong to negative bars" |
 | Least-squares acquisition removed | **Survived** | Added "MIDI tempo is accurate within the first beat" |
 | Never re-acquires on a tempo jump | Caught | — |
 | Never freewheels | Caught | — |
-| Coincident reset ignored | Caught (2 tests) | — |
+| Simultaneous reset ignored | Caught | — |
 
-After the two new tests, all six mutants are caught. This is the manual version of the mutation
-testing planned for nightly CI (Mull): it measures whether tests check behaviour, rather than just
-running code.
+**Round 2** (after the review), restoring each *old* behaviour inside the new code:
+
+| Old behaviour restored | First result | Action |
+|---|---|---|
+| Stop detected at exactly 2P | **Survived** | The slowed-clock rule repaired the count one pulse later, hiding the transient phantom. Added "a tempo halving is a tempo change from its very first pulse". |
+| Returning pulse measures tempo | **Survived** | The wrong period lasted one pulse, then healed. The test now checks the period after the first and second returning pulses. |
+| Double trigger = half a period | Caught | — |
+| No acquisition ceiling | Caught | — |
+| Slowed clock never retires fill-ins | Caught | — |
+| 64-fill cap per call | Caught | — |
+| Pending reset never matches a real edge | Caught | — |
+| Late reset not looked up in history | Caught | — |
+| No index range guard | Caught | — |
+| Windows may round to zero samples | **Survived** | The test used 500 Hz, where the window is still 2 samples. Moved to 100 Hz. |
+| Period floor in `lock_on_interval()` removed | **Survived** | Unreachable: every caller has already rejected shorter intervals. Replaced with a stated `expects()` precondition rather than kept as dead code. |
+| Period floor in `track()` removed | Survived, **kept** | Unreachable with real input (a correction is at most ¼ period), but a zero period would divide by zero on the device. Labelled in the code as a defensive guard. |
+
+**Lesson, twice over:** two of the round-2 survivors weren't missing behaviour, they were
+*transients*. The end state was correct but the path was wrong for one pulse, and in follow mode a
+one-pulse period error is an audible pitch jump. Tests must check the moments that matter, not just
+the final state.
 
 ---
 
