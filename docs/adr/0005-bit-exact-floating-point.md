@@ -43,11 +43,20 @@ invariant promises "no denormals".
   polynomial or a `constexpr` table. `std::sqrt` is correctly rounded everywhere, so it stays.
 - **No engine arithmetic produces or consumes a subnormal**, whatever the FPU mode:
   - recursive state whose magnitude falls below 2⁻⁵⁰ (−301 dBFS) is set to exactly zero;
-  - audio entering an arithmetic path is flushed the same way.
+  - audio entering an arithmetic path, and every value passed between processing stages, is
+    flushed the same way;
+  - within a stage, nothing multiplies more than two such values. A product of two
+    accumulations is formed from their square roots, as in the seam correlation's normaliser
+    √Σx² · √Σy².
 
-  2⁻⁵⁰ is a power of two, so the comparison is exact everywhere. It sits far above the
-  subnormal range (2⁻¹²⁶) and far below the 24-bit floor (−144 dBFS). Products and differences of
-  values that large stay normal.
+  Why these bounds hold:
+  - 2⁻⁵⁰ is a power of two, so the comparison is exact everywhere.
+  - It sits far above the subnormal range (2⁻¹²⁶) and far below the 24-bit floor (−144 dBFS).
+  - A product of two values at least that large is at least 2⁻¹⁰⁰. Sums and differences of such
+    products are normal or exactly zero, because their ulps are at least 2⁻¹²³.
+  - A product of two products is not safe. At the floor, two 50 ms sums of squares are
+    1.9 × 10⁻²⁷ each, and their product, 3.6 × 10⁻⁵⁴, falls below even the smallest subnormal
+    (1.4 × 10⁻⁴⁵). Hence the square roots.
 
 ## Consequences
 
