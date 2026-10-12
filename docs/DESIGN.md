@@ -111,9 +111,13 @@ about **174 s** of stereo audio in total.
 **Paged tape** (P1, planned; ADR 0004). All loop audio lives in one pool of fixed-size **pages**.
 Audio is never copied; loops hold pages:
 
-- **A page** holds 2¹⁵ stereo frames: 0.68 s at 48 kHz, 256 KiB of float32. The size is a power of
-  two, so a position inside a page is a shift and a mask. A modulo by a run-time length would be a
-  software 64-bit division on the M7.
+- **A page** is the smallest power-of-two number of stereo frames that lasts at least 0.6827 s:
+  - 2¹⁵ frames (256 KiB of float32) at 44.1 and 48 kHz;
+  - 2¹⁶ at 88.2 and 96 kHz;
+  - 2¹⁷ at 176.4 and 192 kHz.
+
+  Every page count below is therefore its 48 kHz value or less, at any sample rate; only the bytes
+  per page change. A position inside a page is a shift and a mask.
 - **The recorder** writes the input into pages without pause. It takes a free page whenever the
   current one fills, and gives a page back once it is older than the history and no loop holds it.
 - **A loop** holds the ids of the pages its window touches, with a reference count on each. When
@@ -125,7 +129,8 @@ Audio is never copied; loops hold pages:
 | Remaining | 11.5 MiB | FX (delay up to 10 s stereo = 3.8 MB), stretch scratch |
 
 **History.** The history is the newest 46 pages. Once the recorder has filled them, 45 are
-complete: **30.7 s**. A capture of N bars reaches back N bars from its end line, and the end line
+complete: at least **30.7 s**. That is exact at 48, 96 and 192 kHz; at 44.1, 88.2 and 176.4 kHz
+it is 33.4 s. A capture of N bars reaches back N bars from its end line, and the end line
 can be up to a bar before the press (§3.4). The history therefore covers a capture whenever
 N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
 
@@ -142,10 +147,10 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
   margins and up to two partial pages, a loop therefore touches at most 47 pages.
 - A capture is admitted only if every loop's pages plus the history still fit. The recorder
   therefore never runs out, and the history is never interrupted, however many loops exist.
-- P1 needs at most 3 × 47 + 46 = 187 pages (two slots, one of them being replaced). P2's four
-  slots and undo need a policy (§15).
-- On the host and in Rack the pool is sized for the sample rate. Pages are counted in frames, so
-  at 96 kHz a page lasts 0.34 s and the history needs twice as many.
+- P1 needs at most 3 × 47 + 46 = 187 pages: two slots, one of them being replaced, with one
+  capture in flight at a time (§3.4). P2's four slots and undo need a policy (§15).
+- Because pages scale with the sample rate, these counts hold on every target. The host and Rack
+  size the pool in bytes for their rate: at 96 kHz each page is 512 KiB.
 - The engine never touches the pool before its first `process()`. On the Daisy, SDRAM is
   configured inside `hardware.Init()`, after static constructors have run.
 - These numbers become `static_assert`s with the implementation.
@@ -277,8 +282,8 @@ grid. Full explanation, measurements and the mutation-testing record:
   - PPQN selection from the UI
   - **edge times**, for capture. Next to each filtered time, the history keeps the pulse's raw
     edge; a filled-in pulse keeps its predicted time. The filtered times serve the future, and
-    capture estimates the past from the edges (§3.4). The change only adds; nothing existing
-    changes.
+    capture estimates the past from the edges (§3.4). The change only adds: the tracker's
+    constructor takes a second span, and the engine's clock history grows from 12 KB to 24 KB.
 
 ### 3.4 Retrospective capture (the headline feature)
 
@@ -286,6 +291,10 @@ grid. Full explanation, measurements and the mutation-testing record:
 
 The input is **always being recorded** onto the paged tape (§2.3). A capture copies nothing and
 never needs arming. It chooses a window of whole bars, pins the window's pages, and plays them.
+
+- **One capture is in flight at a time**, engine-wide, from its press until it becomes final.
+- **The capture PRs are single-slot:** one loop plays at a time. P1's second slot arrives with the
+  crossfader (§14).
 
 #### Which bars
 
@@ -297,79 +306,143 @@ never needs arming. It chooses a window of whole bars, pins the window's pages, 
 - **The end line** is the next bar line if it is at most ¼ beat away (an early press, "on the
   one"). Otherwise it is the most recent bar line.
   - ¼ beat is a starting value, to be tried in Rack.
+  - The end line is always chosen from the moment of the press, even when the press has to wait
+    (below).
 - **The window** is `[end − N bars, end)`. Each edge of the window sits at a bar line's estimated
   time (below) plus L_in (§3.5), rounded to the nearest sample (halves up).
 - **Around the window:** before it lies the **pre-roll**, at least 50 ms (§5.3). After it there
   is a 50 ms read margin.
 - **One labelling.** While a reset is pending, bars are numbered as they will be once it applies
-  (§3.3). A pending capture is planned again whenever the labels change.
+  (§3.3).
+  - A capture still waiting for its line is planned again whenever the labels change.
+  - A capture that has started playing keeps its window: the same pulses, whatever their new
+    numbers. This includes a late press that races a reset delivered just after its pulse.
+    §3.6 says what the loop then plays.
 - **Freewheeling.** While the clock is stopped, fill-ins count as edges, so a capture cuts on the
-  freewheeling grid.
+  freewheeling grid. If the clock turns out to have slowed by 2.5× or more, the tracker retires
+  the fill-ins and re-records the real pulses (§3.3):
+  - a capture still waiting for its line is planned again;
+  - a loop that has started playing keeps its window and bar positions, final or not. An end that
+    is not yet final stays at its provisional edge.
+  - The kept cut is then not on a real bar line, and the renumbering re-phases the loop at the
+    next line (§3.6).
+
+    Measured with the tracker: a loop whose end line is the first fill-in becomes final before
+    the retirement from a 4.75× slowdown on. A test pins this.
 
 #### Where a bar line is
 
 The tracker's history holds *filtered* pulse times, which serve prediction. The past is better
-estimated from the raw **edges** on both sides of a line (§3.3). Each bar line is estimated from
-the 8 edges on either side of it:
+estimated from the raw **edges** on both sides of a line (§3.3). A bar line at pulse *i* is
+estimated from the edges *x* of the 8 pulses on each side:
 
-1. **Fit each side.** A repeated-median line goes through each side's 8 edges. A repeated median
-   ignores up to 3 bad edges of 8.
-2. **Keep an edge that agrees.** If the line's own edge lies within 1 sample of either side's
-   line, it stays. It is an ordinary pulse, or the start of a phase shift or tempo change, which
-   the side after it confirms.
-3. **Repair an edge that doesn't.** Correct both lines for the curvature their slopes reveal. On
-   a ramp both lines bend the same way, by a fixed multiple of the curvature. If the corrected
-   lines then agree within 1 sample, the clock came back to its grid, and the line lies at their
-   mean. This repairs hiccups and bursts.
-4. **Otherwise keep the edge.**
+1. **Fit each side.** Each side gets a repeated-median line through its 8 edges, which ignores up
+   to 3 bad edges of 8:
+   - **slope *s*:** for each edge, the median of its slopes to the other 7 edges; then the median
+     of those 8 values. A median of an even count is the mean of the middle two.
+   - **value *v* at pulse *i*:** the median, over the side's edges, of *x_j* − *s*·(*j* − *i*).
+2. **Keep an edge that lies on a straight line.** If *x_i* is within 1 sample of *v_left* or
+   *v_right*, it stays. This is the path for a steady tempo. It is also the path for the first
+   pulse of a phase shift or tempo change, which the side after it confirms.
+3. **Correct for curvature.** On a ramp, both straight lines miss the curve. Fed a pure parabola
+   *u²*, the repeated median gives slopes of ∓9 and a value of −16 at the line, all linear in the
+   curvature.
+   - The curvature is therefore *c* = (*s_right* − *s_left*) / 18.
+   - The corrected values are *v′* = *v* + 16·*c* on each side.
+   - Their **spread** is |*v′_left* − *v′_right*|, and their **mean** is
+     (*v′_left* + *v′_right*) / 2.
+4. **Repair an edge that is clearly off.** This step needs both conditions:
+   - the spread is at most 64 samples, so the two sides agree on where the pulse belongs;
+   - *x_i* is more than max(1 sample, 2 × spread) from the mean.
 
-Measured on the gate clock at 4 PPQN and 120 BPM. Errors are in samples, the worst over a line
-and the 3 pulses either side:
+   Then the line lies at the mean: the clock came back to its grid. This repairs hiccups and
+   bursts.
+5. **Otherwise keep the edge.** Pulses on a ramp end here.
+   - A straight line misses the curve by 16·*c*: 37.5 samples on the 10%-over-8-bars ramp. Step 2
+     therefore fires only on ramps about 40 times gentler than that.
+   - On a ramp the corrected lines agree with the edge, so step 4 leaves it alone.
+
+**Arithmetic:**
+
+- Residuals are taken from the straight line through *x_i* at the tracker's period. They are
+  computed exactly, in Q47.16 ticks.
+- The fits run in `float` on those residuals.
+- The result goes back into ticks, rounded to the nearest tick.
+- Window edges then round to the nearest sample, halves up, as above.
+
+The 1-sample and 64-sample tolerances and the factor of 2 are measured choices.
+
+Measured on the gate clock at 4 PPQN and 120 BPM, in a double-precision probe. Errors are in
+samples, the worst over a line and the 3 pulses either side; "—" means not measured. The
+implementation pins the same cases in `float`.
 
 | Case | History | Edge | Estimate |
 |---|---|---|---|
-| One pulse off by 0.2 period (tracked as jitter) | 1,080 | 1,200 | 0.01 |
-| One pulse off by 0.45 period | 2,700 | 2,700 | 0.01 |
-| A burst of 2 to 4 off-grid pulses, at or around the line | 1,800 | 1,800 | 0.05 |
-| A phase shift of 0.2 period, at or 2 pulses before the line | 120 | 0.01 | 0.01 |
-| Tempo × 1.1 from the line | 60 | 0.01 | 0.01 |
-| Tempo ramps from −30% to +50%, linear or exponential | 0.64 (10% over 8 bars) | 0 | 0 |
+| One pulse off by 2 or 30 samples, or by ±0.1, ±0.2, ±0.3 or ±0.45 of a period | 2,700 (at 0.45) | 2,700 | 0.01 |
+| Bursts of 2 to 4 off-grid pulses, at or around the line | 1,800 | 1,800 | 0.05 |
+| Phase shifts of 0.002, 0.1, 0.2, 0.3 and −0.2 of a period, 2 pulses before the line, at it, or 1 after | 120 (at 0.2) | 0.01 | 0.01 |
+| Tempo changes of ×0.5, ×0.9, ×1.01, ×1.1, ×1.5 and ×2, 2 pulses before the line, at it, or 1 after | 60 (at ×1.1) | 0.01 | 0.01 |
+| Linear ramps: +10% over 8 bars, +10% and +20% over 2, −20% over 1, +50% over 4; ramps starting or ending at the line | 0.64 (the first) | 0 | 0 |
+| Exponential ramps: +10% over 8 bars, +20% over 2, +50% over 4, −30% over 1 | — | 0 | 0 |
+| A 1,800-sample hiccup on a linear ramp, or on an exponential one (+20% over 2 bars, +50% over 4) | — | 1,800 | 0.30 |
+| A 1,800-sample hiccup on an exponential ramp of −30% over 1 bar | — | 1,800 | 1,800 |
 
-- **When a loop is final.** The estimate needs the 8 pulses after a line, so a loop's end, and
-  so its length, is final 8 pulses after its end line: 2 beats at 4 PPQN. If the clock stops,
+- **The limit.** On a ramp that bends hard within 8 pulses, the corrected sides disagree, by 378
+  samples in the last row, so a hiccup there is not repaired: the edge is kept.
+- **When a loop is final.** The estimate needs the 8 pulses after a line, so a loop's end, and so
+  its length, is final 8 pulses after its end line: 2 beats at 4 PPQN. If the clock stops,
   fill-ins arrive from 2.5 periods later (§3.3), so a loop always becomes final.
 - **Short history.** A line with fewer than 8 edges on a side keeps its edge. That happens only
   when the clock has just started.
-- **MIDI clock is not yet measured.** Its jitter would pass through unsmoothed. MIDI's tolerance
-  and smoothing are chosen when MIDI clock is wired.
+- **MIDI clock is not yet measured.** MIDI's tolerances are chosen when MIDI clock is wired.
 
 #### When the loop starts
 
-- **Early press:** the new loop's first bar starts exactly on the end line, entered from its own
-  pre-roll like every downbeat (§5.2). Its start was settled long before.
-  - Its length becomes final before its first wrap whenever a bar has more than 8 pulses (4 PPQN
-    in 4/4 has 16).
-  - With fewer pulses per bar, the first wrap uses the raw end edge.
-- **Late press:** the loop starts at once, mid-bar, where it would be had it started on the end
+- **Early press, with at least F (8 ms) before the line.** The new loop's first bar starts
+  exactly on the end line, entered from its own pre-roll like every downbeat (§5.2). Its start
+  was settled long before.
+- **Early press, with less lead than F.** The entry shortens to the time left. Below 2 ms (the
+  §5.3 floor), the loop starts on the line with `crossfaded_seek` instead.
+- **Late press.** The loop starts at once, mid-bar, where it would be had it started on the end
   line. `crossfaded_seek` fades it in (§5.4).
-- **Replacing a playing loop** uses the same two moves: an early press hands over on the line,
-  and a late press hands over with a seek.
-- The loop then plays bar-locked (§3.6).
+- **A provisional end.** Until its end line is final (8 pulses after the line), the loop uses the
+  raw end edge. That applies to early presses, and to late presses made within 8 pulses of their
+  line.
+  - If the estimate then changes, the change takes effect at the next line through the usual
+    bar-locked move (§3.6). For the end line, the next line is the first wrap.
+  - The end is final before the first wrap whenever a bar has more than 8 pulses (4 PPQN in 4/4
+    has 16). With fewer, the first wrap uses the raw end edge.
+- **Replacing a playing loop** uses the same moves: an early press hands over on the line, and a
+  late press hands over with a seek.
+- **The loop then plays bar-locked** (§3.6).
 
 #### Pinning and limits
 
-- **Pinning.** A press pins every page it may need at once, so the start can't age out of the
-  history while the end waits to become final.
-- **Shortened captures.** A capture is shortened to the largest of 1, 2, 4 or 8 bars that the
-  history and the clock both cover. This happens just after power-up, or when the clock started
-  recently.
+- **Pinning.** At the press, the capture pins every recorded page it may need. Some pages its
+  window may reach are not recorded yet:
+  - an early press's end line, up to ¼ beat ahead;
+  - the 50 ms read margin;
+  - up to 0.45 of a period of repair, either way.
+
+  Admission reserves those pages, and the recorder pins each page it allocates while the capture
+  is in flight. When the capture becomes final, it releases the pages its window does not use.
+- **Shortened captures.** A capture whose window does not fit the history is shortened to the
+  largest of 1, 2, 4 or 8 bars that fits. At slow tempos this is routine:
+  - above the §2.3 tempos, N bars always fit;
+  - below them, it depends on how late the press is;
+  - below N bars' own fit, N bars never fit: 62.6 BPM for 8 bars, 31.3 for 4, 15.7 for 2 and
+    7.8 for 1.
+
+  A capture is also shortened just after power-up, or when the clock started recently.
 - **Refused captures.** A capture is refused when not even one bar fits, when there is no tempo
   yet, or when the pool can't take its pages (§2.3). The loop report says which.
 - **The bar count** is taken at the press.
-- **A new press:**
-  - an early press waiting for its line is superseded by the new one;
-  - a press during an entry crossfade waits for that crossfade to finish;
-  - otherwise the new capture replaces the playing loop as above.
+- **A new press while a capture is in flight:**
+  - an early press still waiting for its line is superseded by the new one;
+  - a press during an entry crossfade waits for that crossfade to finish, and keeps its own
+    timestamp for choosing its end line;
+  - otherwise the in-flight capture is playing but not yet final. The new capture replaces its
+    loop as above, and becomes the one in flight.
 - **Forward recording** uses the same mechanism: start at the next bar line, stop after N bars or
   at a second press. It comes after P1.
 
@@ -400,13 +473,31 @@ drifts or changes:
   exactly on its grid line.
   - **The loop's own bar lines.** The loop stores its N + 1 bar positions (§3.4), so a window that
     spans a tempo change keeps its unequal bars.
-  - **Which bar is due.** At grid bar *g*, loop bar `(g − c) mod N` is due, where *c* is the end
-    bar modulo N. The loop's first bar therefore plays in the bar right after the bars it
-    captured, and the loop keeps its place in an N-bar phrase across resets.
-  - **At each line,** the playhead is compared with where the due bar starts. Within 1 sample it
-    plays on. Otherwise it moves by the difference, just before whichever comes first: the line,
-    or the natural downbeat. The move is a crossfade from the audio that preceded that downbeat
-    (§5.2).
+  - **Which bar is due.** Each loop bar has a **phrase position**: its bar number modulo N, in
+    the numbering it was recorded under. At grid bar *g*, the loop bar whose phrase position is
+    *g* mod N is due. The loop's first bar therefore plays in the bar right after the bars it
+    captured.
+  - **When the numbering changes** (a reset, or retired fill-ins, §3.3), the next line applies
+    one of two rules:
+    - **The numbering at capture came from a reset.** The loop keeps its phrase positions and
+      plays the bar the new numbering calls for. A reset on a phrase boundary changes nothing.
+      An off-phrase reset moves the loop to the bar recorded at the same phrase position. That
+      keeps the loop aligned with a sequencer that restarted on the same reset.
+    - **No reset had yet set the numbering.** The phrase positions were the module's own count,
+      so the change leaves the loop playing where it is, and the loop takes its phrase positions
+      from the new numbering.
+
+    Example: N = 4, a loop of old bars 2–5, and a reset on old bar 7, which becomes new bar 0.
+    Under the first rule, new bar 0 gets loop bar 2, recorded at old bar 4, a phrase start.
+    Under the second, it gets loop bar 1, as it would have anyway.
+  - **At each line,** before the due downbeat plays, its natural time is compared with the line in
+    Q47.16 ticks.
+    - If they are a whole sample or more apart, the downbeat moves onto the line's nearest
+      sample. The move is made just before whichever comes first, the line or the natural
+      downbeat, as a crossfade from the audio that preceded that downbeat (§5.2).
+    - Otherwise it plays on.
+
+    Every loop downbeat therefore leaves less than one sample from its line.
   - **What moves.** Only audio from just before a downbeat is repeated or skipped. The downbeat
     itself is never early, late or doubled. For example, a clock 0.4% slower than the recording
     (120 → 119.5 BPM) repeats 8.4 ms of the end of each bar, once per bar.
@@ -502,12 +593,14 @@ never touched**, so kicks stay sharp and grid alignment stays exact. (The altern
 crossfading the head with the audio after the end, smears the downbeat and is not used.)
 
 **The general rule:** every downbeat a loop plays is entered from the audio that preceded it in
-the recording. The wrap is one case. The others use the same crossfade, also ending exactly on
-the line:
+the recording.
 
-- **A bar-locked move (§3.6):** from the current audio into the audio before the due bar.
-- **A new loop's first bar** (an early press, §3.4): from silence, or from the loop it replaces,
-  into the new loop's pre-roll.
+- **The exception:** a bar-locked slowdown at the wrap that is larger than the pre-roll can absorb
+  (50 ms − F, §5.3) repeats the end of the loop's own last bar instead.
+- **The wrap is one case.** The others use the same crossfade, also ending exactly on the line:
+  - **a bar-locked move (§3.6):** from the current audio into the audio before the due bar;
+  - **a new loop's first bar** (an early press, §3.4): from silence, or from the loop it
+    replaces, into the new loop's pre-roll.
 
 The properties:
 
@@ -562,6 +655,8 @@ this right:
 - Inputs pass through a **DC blocker** (about 5 Hz one-pole high-pass) *before* recording. P1
   puts it on the record path only. The live path stays a bit-exact passthrough until the mixer
   gives it the same blocker.
+  - Its state snaps to exactly zero below 2⁻⁵⁰ (−301 dBFS). Fed silence, a 5 Hz one-pole goes
+    subnormal after 2.78 s and stays there; with the snap it never does (ADR 0005).
 
 ### 5.6 How it is verified
 
@@ -590,23 +685,24 @@ is a silent pre-roll (§5.3).
 ## 6. Signal flow and mixing
 
 ```
-                ┌──────────── DC block ────────────┐
- IN L/R ───────►│                                  ├──► tape (always recording, §2.3)
-                └───────────────┬──────────────────┘
-                                │ live bus
-                                ▼
+                         ┌───── DC block ─────┐
+ IN L/R ───────┬────────►│                    ├──► tape (always recording, §2.3)
+               │         └────────────────────┘
+               │ live bus (P1: no DC block until the mixer, §5.5)
+               ▼
   slot 1 ─┐                ┌─────────┐
   slot 2 ─┼─► loop bus ───►│ FX      ├──► loop ──┐
   slot 3 ─┤   (levels,     │ insert  │           ▼
   slot 4 ─┘    mutes)      └─────────┘     ┌────────────┐
-                                live ─────►│ crossfader │──► OUT L/R
+               live ──────────────────────►│ crossfader │──► OUT L/R
                                            │ equal-power│
                                            └─────┬──────┘
                     capture source ◄── Input (dry) or Mix (what you hear)
                     cue bus (module only) ◄── pre-fader slot audition ──► CUE L/R
 ```
 
-- **DC block:** in P1 it sits on the record path only (§5.5).
+- **DC block:** in P1 it sits on the record path only; the live bus gets one with the
+  mixer (§5.5).
 - **Crossfader:** equal-power (sin/cos) between the live bus and the loop bus. It is CV
   controllable and slewed.
 - **Quantized auto-fade:** one press fades across 1, 2 or 4 bars, landing exactly on a downbeat.
@@ -875,14 +971,21 @@ states its **host-pass** and **device-pass** criteria.
 the wall clock. Host renders are therefore bit-exact, and device output matches within a stated
 tolerance.
 
-Retro capture brings arithmetic into rendered audio, so two rules keep floating point identical
-across compilers and CPUs (ADR 0005). Golden renders blessed on macOS (arm64) must then match on
-Linux (x86-64) byte for byte:
+Retro capture brings arithmetic into rendered audio, so three rules keep floating point identical
+across compilers, CPUs and FPU modes (ADR 0005). Golden renders blessed on macOS (arm64) must then
+match on Linux (x86-64) byte for byte:
 
 - The engine is built with `-ffp-contract=off` on every target. No compiler fuses a multiply and
   an add on its own; `std::fma` does it explicitly where wanted.
 - Rendered paths call no libm transcendental functions. Curves come from our own polynomial or
   table.
+- **No engine arithmetic produces or consumes a subnormal.** Rack's engine thread flushes them to
+  zero, while the host and the M7 keep them, so results would otherwise depend on the FPU mode.
+  - Recursive state below 2⁻⁵⁰ (−301 dBFS) snaps to exactly zero.
+  - Audio entering an arithmetic path is flushed the same way. The live path's copy stays
+    bit-exact.
+
+  This is also what makes T2's "no denormals" invariant true.
 
 ---
 
@@ -966,7 +1069,7 @@ mode with drift correction, latency calibration.
 
 | Side | Criteria |
 |---|---|
-| Host | Loop length error = 0 samples over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp (**clock tracker: met**: < 0.01 steady, 0.6 ramp). Click metric ≤ 1.1, and the seam envelope within ±1 dB, on the full test-signal set (§5.6). |
+| Host | Each loop end on the sample nearest its true bar line, except where that line lies within 0.05 samples of a half sample, where the neighbouring sample is allowed (§3.4). No drift over 64 bars. Phase error < 1 sample at a steady clock and < 5 samples through a ±10% tempo ramp (**clock tracker: met**: < 0.01 steady, 0.6 ramp). Click metric ≤ 1.1, and the seam envelope within ±1 dB, on the full test-signal set (§5.6). |
 | Device | Capture alignment vs. clock edge within ±1 sample at the jacks. No drift over 64 bars. |
 
 ### P2 — Performance
