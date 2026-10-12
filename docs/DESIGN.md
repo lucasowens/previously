@@ -549,9 +549,31 @@ drifts or changes:
       - one that lands δ into a bar repeats those δ if δ is under half a bar, and otherwise
         skips the rest of the bar.
 
-    Example: N = 4, a loop of old bars 2–5, and a reset on old bar 7, which becomes new bar 0.
-    Under the first rule, new bar 0 gets loop bar 2, recorded at old bar 4, a phrase start.
-    Under the second, it gets loop bar 1, as it would have anyway.
+    Example. The music runs in 4-bar phrases, with a fill in each 4th bar, and its numbering
+    came from a reset when the sequencer started. A capture of the last 4 bars is pressed at
+    bar 6:
+    - the loop holds A3 A4 B1 B2;
+    - its fill, A4, lands on the phrase ends, bars 7 and 11.
+
+    Then the sequencer is restarted from its top at bar 9, and sends a reset:
+
+    ```
+    old bar                     9    10   11   12
+    new bar                     0    1    2    3
+    sequencer                   A1   A2   A3   A4     its fill on new bar 3
+    the first rule              B1   B2   A3   A4     the fill lands with the sequencer's
+    restarting the loop         A3   A4   B1   B2     the fill two bars early
+    ignoring the reset          B2   A3   A4   B1     the fill one bar early
+    ```
+
+    - **The first rule** plays B1 on new bar 0, because B1 was recorded at bar 4, a phrase start.
+    - **Restarting the loop on every reset**, the DAW convention, was considered and rejected.
+      It puts a loop captured mid-phrase out of step with the sequencer, and retro capture is
+      pressed whenever something sounds good, not only at the end of a phrase.
+    - **Ignoring the reset** is the second rule. It is kept only for numbering that never came
+      from a reset.
+    - **When the choice makes no difference.** A capture pressed at a phrase end, with resets on
+      phrase starts, plays the same under all three behaviours.
   - **At each line,** before the due downbeat plays, its natural time is compared with the line in
     Q47.16 ticks.
     - If they are a whole sample or more apart, the downbeat moves onto the line's nearest
