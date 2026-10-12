@@ -146,12 +146,13 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
 - **A capture holds at most 47 pages, in flight or final.** That covers four things:
   - its window;
   - its 50 ms margins;
-  - a reserve of half a period at each end for repairs (§3.4);
+  - a reserve of half a period after the end line for its repair, and before the start line
+    only if that line is not yet final at the press (§3.4; never at 4 PPQN);
   - up to two partial pages.
 
   That is a span of at most 46 pages, 31.4 s at 48 kHz. A capture that would need more is
-  shortened. The limit binds only at slow tempos: below 8.15, 15.81 and 31.15 BPM for 1, 2 and
-  4 bars at 4 PPQN, and never for 8 bars. Without it, a 1-bar capture at 7.4 BPM would hold 52
+  shortened. The limit binds only at slow tempos: below 7.91, 15.57 and 30.91 BPM for 1, 2 and
+  4 bars at 4 PPQN, and never for 8 bars. Without it, a 1-bar capture at 7.4 BPM would hold 51
   pages.
 - A capture is admitted only if every loop's pages plus the history still fit. The recorder
   therefore never runs out, and the history is never interrupted, however many loops exist.
@@ -357,30 +358,40 @@ The tracker's history holds *filtered* pulse times, which serve prediction. The 
 estimated from the raw **edges** on both sides of a line (§3.3). A bar line at pulse *i* is
 estimated from the edges *x* of the 8 pulses on each side:
 
-1. **Fit each side.** Each side gets a repeated-median line through its 8 edges, which ignores up
-   to 3 bad edges of 8:
+1. **Fit each side, and estimate the jitter.** Each side gets a repeated-median line through its
+   8 edges, which ignores up to 3 bad edges of 8:
    - **slope *s*:** for each edge, the median of its slopes to the other 7 edges; then the median
      of those 8 values. A median of an even count is the mean of the middle two.
    - **value *v* at pulse *i*:** the median, over the side's edges, of *x_j* − *s*·(*j* − *i*).
-2. **Keep an edge that lies on a straight line.** If *x_i* is within 1 sample of *v_left* or
-   *v_right*, it stays. This is the path for a steady tempo. It is also the path for the first
-   pulse of a phase shift or tempo change, which the side after it confirms.
+
+   The **second differences** *d_j* = *x_{j+1}* − 2·*x_j* + *x_{j−1}* inside the two sides
+   (6 each, so 12, none using *x_i*) carry the curvature and the noise.
+   - Each one is 2·*c* plus noise, so their spread is noise alone.
+   - The **jitter estimate** *σ̂* is therefore 1.4826 × the median of |*d_j* − median(*d*)|,
+     divided by √6.
+   - On the gate clock, *σ̂* is about 0.005 samples, and every threshold below sits at its floor.
+2. **Keep an edge that lies on a straight line.** If *x_i* is within max(1 sample, 4·*σ̂*) of
+   *v_left* or *v_right*, it stays. This is the path for a steady tempo. It is also the path for
+   the first pulse of a phase shift or tempo change, which the side after it confirms.
 3. **Correct for curvature, when there is curvature.** On a ramp, both straight lines miss the
    curve. Fed a pure parabola *u²*, the repeated median gives slopes of ∓9 and a value of −16 at
    the line, all linear in the curvature. That gives two estimates of the curvature *c*:
    - **between the sides:** *c_between* = (*s_right* − *s_left*) / 18;
-   - **within the sides:** *c_within* = half the median of the 12 second differences
-     *x_{j+1}* − 2·*x_j* + *x_{j−1}* taken inside the two sides (6 each).
+   - **within the sides:** *c_within* = half the median of the 12 second differences.
 
    A tempo step has no curvature inside either side, but its slope difference reads as
    curvature. So *c* = *c_between* only when |*c_between* − *c_within*| ≤ max(¼·|*c_within*|,
-   0.01 samples per pulse²). Otherwise *c* = 0.
+   0.01, 3·*σ̂*), in samples per pulse². Otherwise *c* = 0.
+   - The 3·*σ̂* term matters under jitter. Without it, jitter can fail the check on a real ramp.
+     *c* = 0 then leaves both lines 16·*c* off the curve, and step 4 would move a good edge by
+     that much: 41.5 samples on the gentle ramp at ±1 sample of jitter, 349 on +20% over 2 bars at
+     ±10.
    - The corrected values are *v′* = *v* + 16·*c* on each side.
    - Their **spread** is |*v′_left* − *v′_right*|, and their **mean** is
      (*v′_left* + *v′_right*) / 2.
 4. **Repair an edge that is clearly off.** This step needs all three conditions:
    - the spread is at most 64 samples, so the two sides agree on where the pulse belongs;
-   - *x_i* is more than max(1 sample, 2 × spread) from the mean;
+   - *x_i* is more than max(1 sample, 2 × spread, 20·*σ̂*) from the mean;
    - the mean is at most half a period from *x_i*. A pulse displaced further is closer to its
      neighbour's slot (§3.3), and the capture's page reserve (below) stops at half a period.
 
@@ -399,8 +410,23 @@ estimated from the edges *x* of the 8 pulses on each side:
 - The result goes back into ticks, rounded to the nearest tick.
 - Window edges then round to the nearest sample, halves up, as above.
 
-The tolerances (1 and 64 samples, ¼ and 0.01 for the curvature check) and the factor of 2 are
-measured choices.
+The tolerances are measured choices: 1 and 64 samples, ¼ and 0.01 for the curvature check, the
+factor of 2, and the jitter multipliers. Of the multipliers, the repair bound's matters most.
+Over 5,000 seeds per jittered family:
+
+| Repair bound | Ramp lines left worse than their raw edge |
+|---|---|
+| 6·*σ̂* | about 1.4% |
+| 10·*σ̂* | about 0.1% |
+| 15·*σ̂* | 2 in 35,000 |
+| 20·*σ̂* | none |
+
+Raw edges carry jitter, and a fit extrapolated 4.5 pulses carries up to about four times as
+much, so only a clear outlier may replace an edge. The other two multipliers have more room:
+
+- **The keep multiplier** (4) made no difference anywhere from 3 to 5, in a 200-seed sweep.
+- **The curvature check** at 3·*σ̂* never failed on a ramp in 30,000 lines. At 1.5·*σ̂* it failed
+  on up to 16 in 5,000.
 
 Measured on the gate clock at 4 PPQN and 120 BPM, in a double-precision probe, over 136
 scenarios. Errors are in samples, the worst over a line and the 3 pulses either side; "—" means
@@ -417,6 +443,17 @@ not measured. The implementation pins the same cases in `float`.
 | Exponential ramps: +10% over 8 bars, +20% over 2, +50% over 4, −30% over 1 | — | 0 | 0 |
 | A 1,800-sample hiccup on a linear ramp, or on an exponential one (+20% over 2 bars, +50% over 4) | — | 1,800 | 0.30 |
 
+Under jitter, measured with uniform jitter over 5,000 seeds per case (errors at the line):
+
+| Case | Raw edge, worst | Estimate, worst | Lines worse than the raw edge |
+|---|---|---|---|
+| Steady, ±0.5, ±10 and ±20 samples | the jitter | the jitter | 0 |
+| +10% over 8 bars, ±0.5 to ±5 samples | the jitter | the jitter | 0 |
+| +20% over 2 bars, ±2 to ±20 samples | the jitter | the jitter | 0 |
+| Tempo steps of ×1.1 and ×2 at the line, ±20 samples | 20 | 20 | 0 |
+| A 1,800-sample hiccup on +10% over 8 bars, ±2 samples | 1,802 | 11 | 0 |
+| A tempo step of ×1.01 at the line, ±10 samples | 10 | 61.8 | 24 |
+
 **The limits.** In each of these cases the two sides disagree about where the pulse belongs, so
 step 4 cannot repair it and the edge is kept, at its own error:
 
@@ -427,6 +464,14 @@ step 4 cannot repair it and the edge is kept, at its own error:
 - a slipped edge on the first few pulses after a tempo step, while the step still splits the
   left side's edges (measured on the first and the third pulse after it): the sides are the
   step apart.
+
+Under jitter there are three more:
+
+- **a displacement smaller than 20·*σ̂*** is kept, because it cannot be told from the jitter;
+- **a hiccup on a steep ramp under heavy jitter** can be kept, because the 64-sample spread bound
+  does not scale with the jitter (+20% over 2 bars at ±10 samples);
+- **a small tempo step under heavy jitter** reads as curvature (the last jitter row above). Its
+  slope change is about as large as the noise in *c_within*, so the guard can't see it.
 
 Without the curvature check in step 3, a tempo step beginning at the line turns a 1.01-sample
 slip into a 533-sample error (×1.1), and a 2-sample slip into 5,333 (×2). That case is the
@@ -439,10 +484,9 @@ The other notes:
   fill-ins arrive from 2.5 periods later (§3.3), so a loop always becomes final.
 - **Short history.** A line with fewer than 8 edges on a side keeps its edge. That happens only
   when the clock has just started.
-- **MIDI clock is not yet measured.** In the four 10-sample-jitter scenarios run, the estimate was
-  never worse than the raw edge: a tempo step kept its 15.7 samples of jitter, where the
-  check-free rule gave 531. It does not smooth jitter either. MIDI's tolerances are chosen when
-  MIDI clock is wired.
+- **MIDI clock is not yet measured.** The thresholds scale with *σ̂*, so MIDI needs no tolerance
+  of its own. But its jitter, up to ±48 samples, is beyond the ±20 tested, and the small-step
+  limit above grows with the jitter. It is measured when MIDI clock is wired.
 
 #### When the loop starts
 
@@ -470,7 +514,11 @@ The other notes:
   window may reach are not recorded yet:
   - an early press's end line, up to ¼ beat ahead;
   - the 50 ms read margin;
-  - half a period of repair at each end of the window. Step 4 never moves a line further.
+  - half a period of repair after the end line. Step 4 never moves a line further.
+
+  No reserve is needed before the start line when it is already final at the press. That is
+  the case whenever 8 pulses after it have arrived, which at 4 PPQN is always (a bar has 16).
+  Otherwise half a period is reserved before the start line too.
 
   Admission reserves those pages, and the recorder pins each page it allocates while the capture
   is in flight. When the capture becomes final, it releases the pages its window does not use.
@@ -480,16 +528,19 @@ The other notes:
 
   | Bars | Any press fits from | Every early press fits from | No press fits below |
   |---|---|---|---|
-  | 1 | 15.65 | 8.15 | 8.15 |
-  | 2 | 23.48 | 15.81 | 15.81 |
-  | 4 | 39.13 | 31.30 | 31.15 |
+  | 1 | 15.65 | 7.91 | 7.91 |
+  | 2 | 23.48 | 15.65 | 15.57 |
+  | 4 | 39.13 | 31.30 | 30.91 |
   | 8 | 70.43 | 62.60 | 62.11 |
 
   - **Any press:** the history at its tightest, for a late press up to a bar after its line
     (§2.3).
   - **Every early press:** a press on its line, with no lead.
   - **No press:** an early press with ¼ beat of lead. Where the 47-page limit binds first, the
-    floor is that limit's: 1, 2 and 4 bars, and the 1- and 2-bar early-press column.
+    floor is that limit's: for 1, 2 and 4 bars, and for 1 bar in the early-press column.
+
+  Every column uses the same reserve rule: half a period after the end line only (pinning,
+  above).
 
   A capture is also shortened just after power-up, or when the clock started recently.
 - **Refused captures.** A capture is refused when not even one bar fits, when there is no tempo
@@ -679,12 +730,15 @@ crossfading the head with the audio after the end, smears the downbeat and is no
 **The general rule:** every downbeat a loop plays is entered from the audio that preceded it in
 the recording.
 
-- **The exception:** a bar-locked slowdown at the wrap that is larger than the pre-roll can absorb
-  (50 ms − F, §5.3) repeats the end of the loop's own last bar instead.
 - **The wrap is one case.** The others use the same crossfade, also ending exactly on the line:
   - **a bar-locked move (§3.6):** from the current audio into the audio before the due bar;
   - **a new loop's first bar** (an early press, §3.4): from silence, or from the loop it
     replaces, into the new loop's pre-roll.
+- **A large slowdown at the wrap is not an exception.** Suppose a bar-locked delay δ at the wrap
+  is more than the pre-roll can absorb (50 ms − F, §5.3). The move is then made inside the last
+  bar first: an F-long crossfade from the loop's last F samples into the audio δ + F before its
+  end. The last bar then plays out through the usual wrap seam into the pre-roll. That makes two
+  crossfades, and the downbeat is entered from the pre-roll as always.
 
 The properties:
 
@@ -710,8 +764,8 @@ after its end (a **read margin**). Interpolators, stretchers and reverse playbac
 them and never past valid data.
 
 - **The pre-roll is played.** It is what enters the first downbeat at each wrap (§5.2). It also
-  absorbs a bar-locked slowdown at the wrap of up to 50 ms − F. A larger slowdown repeats the end
-  of the loop's own last bar instead.
+  absorbs a bar-locked slowdown at the wrap of up to 50 ms − F. A larger one is first taken up by
+  a move inside the last bar (§5.2), and the wrap seam itself is unchanged.
 - **The read margin is never played at native speed,** because it begins with the next bar's
   downbeat.
 - **Too little pre-roll** (a capture just after power-up): the seam shortens to what exists.
@@ -767,7 +821,8 @@ Each signal goes through every way a loop can enter a downbeat:
 - a replacement.
 
 It also goes through `crossfaded_seek`, and through a wrap slowdown beyond 50 ms − F. That
-slowdown enters from the loop's own last bar (§5.2), and is held to the same bounds.
+slowdown adds a move inside the last bar before the usual wrap seam (§5.2), and both crossfades
+are held to the same bounds.
 
 The stated exceptions:
 
@@ -982,7 +1037,9 @@ confidence, but nothing performance-critical depends on it.
       - Every decision uses only what is known at its moment.
       - An edge at the same moment as such a check goes first.
 
-      Output is therefore identical at any block size, for the same edge and command times.
+      Output is therefore identical at any block size, given the same edges and the same times
+      at which commands are applied. Commands apply at block starts, so where a command takes
+      effect does depend on the block size.
 - **Memory (P1, planned):** the engine receives one memory region (SDRAM on device, a heap block
   on host) at construction and carves it into pages (§2.3).
   - **Nothing is allocated after construction**, and the region is not touched before the first
