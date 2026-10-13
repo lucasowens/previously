@@ -88,6 +88,7 @@ At 48 kHz the M7 has **10,000 cycles per stereo frame**. We budget like this:
 |---|---|---|
 | Framework, I/O, DC blockers, smoothing | ~200 | |
 | Retro recording | ~30 | Sequential SDRAM writes |
+| Crossfade shapes (P1, planned) | ~10 averaged; about 30,000 per crossfade | A correlation over 50 ms of both streams, read from SDRAM at each seam, move or seek. A 1/32 stutter at 120 BPM makes one every 62 ms. Measured in T5 |
 | Loop slot, Tape mode (×4) | ~50 each | Cubic interpolation |
 | Loop slot, WSOLA stretch | ~200–500 each | Decimated correlation search |
 | Loop slot, HQ phase vocoder | ~800–2,000 each | CMSIS-DSP real FFT |
@@ -195,7 +196,7 @@ Budget items so far:
 | Item | Size | Note |
 |---|---|---|
 | Clock tracker history | 8 bytes × capacity | The owner provides it: 256 entries (2 KB) cover 16 bars at 4 PPQN; 1,536 (12 KB) at 24 PPQN |
-| Clock tracker edge times (P1, planned) | 8 bytes × capacity | Each pulse's raw edge, for capture (§3.4): another 12 KB at 1,536 entries |
+| Clock tracker edge times (P1, planned) | 8 bytes and 1 bit × capacity | Each pulse's raw edge and a fill-in flag, for capture (§3.4): another 12 KB and 192 bytes at 1,536 entries |
 | Loop page tables (P1, planned) | 2 bytes per page | At most 47 pages per loop |
 
 The firmware owner places these buffers explicitly. Today T0 checks only flash. Adding an SRAM
@@ -289,10 +290,14 @@ grid. Full explanation, measurements and the mutation-testing record:
   - **source priority:** gate, then MIDI, then the tempo set by the first loop (§4.1), then tap
     tempo. Patching a clock takes over smoothly.
   - PPQN selection from the UI
-  - **edge times**, for capture. Next to each filtered time, the history keeps the pulse's raw
-    edge; a filled-in pulse keeps its predicted time. The filtered times serve the future, and
-    capture estimates the past from the edges (§3.4). The change only adds: the tracker's
-    constructor takes a second span, and the engine's clock history grows from 12 KB to 24 KB.
+  - **edge times**, for capture.
+    - Next to each filtered time, the history keeps the pulse's raw edge.
+    - A filled-in pulse keeps its predicted time, and a flag marking it as a fill-in (one bit
+      per entry).
+    - The filtered times serve the future, and capture estimates the past from the edges
+      (§3.4).
+    - The change only adds: the tracker's constructor takes a second span, and the engine's
+      clock history grows from 12 KB to 24 KB, plus 192 bytes of flags.
 
 ### 3.4 Retrospective capture (the headline feature)
 
@@ -366,12 +371,28 @@ estimated from the edges *x* of the 8 pulses on each side:
 
    The **jitter estimate *σ̂*** comes from **third differences**,
    *e_j* = *x_{j+2}* − 3·*x_{j+1}* + 3·*x_j* − *x_{j−1}*.
-   - **What cancels.** Any curvature that is constant, or changes at a constant rate, cancels in
-     a third difference. So third differences carry noise alone, except for the few values
-     where a ramp starts or ends, which the median ignores.
+   - **What cancels.**
+     - A constant curvature gives third differences of zero.
+     - A curvature that changes at a constant rate (a cubic) gives a constant third difference,
+       which subtracting the median removes.
+
+     So the deviations carry noise alone. The exceptions are the few values where a ramp starts
+     or ends, which the median ignores.
    - **The formula:** *σ̂* = 1.4826 × the median of |*e_j* − median(*e*)|, divided by √20.
    - **Its window** is the 64 pulses before the line and the 8 after: 66 values, none using
-     *x_i*. If the clock is younger than that, *σ̂* uses what there is.
+     *x_i*.
+   - **Fill-ins are skipped.** A third difference that touches a filled-in pulse is left out.
+     Fill-ins sit exactly on the predicted grid, so they carry no jitter. A freewheel stretch
+     covering half the window would otherwise pull *σ̂* to zero while the fitted sides are still
+     jittery. Measured at ±10 samples with 40 fill-ins before the line:
+     - without the skip, the median *σ̂* was 0.00 and 384 of 5,000 lines came out worse than
+       their raw edge;
+     - with it, *σ̂* was 6.03 (true 5.77) and none did.
+   - **At least 16.** If fewer than 16 usable values remain (the clock is young, or a long
+     freewheel fills the window), step 4 does not repair: the edge is kept.
+     - With 10 values, *σ̂* falls below half the true jitter in 8.1% of seeds, and 1 line in
+       50,000 came out worse than its raw edge (by 0.5 samples).
+     - With the minimum of 16, none did.
    - **No later finality.** The extra values are all in the past, so a loop does not become
      final any later.
    - **Why third differences, and why 66.** Measured at 50,000 seeds:
@@ -387,7 +408,7 @@ estimated from the edges *x* of the 8 pulses on each side:
        where they balance, and 1.6 to 3 for two bars after an exponential ramp. That only
        loosens thresholds, but a hiccup under 227 samples there would be kept.
      - **The 12-value row's tail** is what broke the earlier rule (below).
-   - **Blind spot.** *σ̂* sees white jitter only: slow wander cancels in a third difference too.
+   - **Blind spot.** *σ̂* sees white jitter only: slow wander barely shows in a third difference.
    - **On the gate clock**, *σ̂* is 0.0050 samples (the median for 0.005-rms jitter). The keep
      and repair thresholds then sit at their 1-sample floors, and the curvature tolerance is
      about 0.015, just above its 0.01 floor.
@@ -401,6 +422,9 @@ estimated from the edges *x* of the 8 pulses on each side:
    - **within the sides:** *c_within* = half the median of the 12 second differences
      *x_{j+1}* − 2·*x_j* + *x_{j−1}* inside the two fitted sides (6 each, none using *x_i*). Each
      is 2·*c* plus noise.
+     - A second difference that touches a fill-in is skipped, as for *σ̂*: fill-ins follow the
+       last period and carry no curvature.
+     - With none left, *c* = 0. That affects accuracy only, because step 4's bound covers it.
 
    A tempo step has no curvature inside either side, but its slope difference reads as
    curvature. So *c* = *c_between* only when |*c_between* − *c_within*| ≤ max(¼·|*c_within*|,
@@ -536,8 +560,9 @@ The other notes:
   its length, is final 8 pulses after its end line: 2 beats at 4 PPQN. If the clock stops,
   fill-ins arrive from 2.5 periods later (§3.3), so a loop always becomes final.
 - **Short history.** A line with fewer than 8 edges on a side keeps its edge. That happens only
-  when the clock has just started. With fewer than 40 pulses before a line, *σ̂* uses the ones
-  there are.
+  when the clock has just started. A line with fewer than 16 usable third differences for *σ̂*
+  also keeps its edge (step 1). That happens just after the clock starts, or after a long
+  freewheel.
 - **MIDI clock is not yet measured.** The thresholds scale with *σ̂*, so white MIDI jitter needs
   no tolerance of its own. USB MIDI's scheduling, though, produces slow wander, which *σ̂*
   cannot see. That wander, not a peak figure like ±48 samples, is what to test when MIDI clock
@@ -850,6 +875,10 @@ this right:
 **One shape rule for every crossfade, seam or seek.** The correlation of the two streams being
 joined chooses the shape, as for the seam (§5.2): equal-gain when they are correlated,
 equal-power when they are not, or a blend.
+- **The window.** An entry into a downbeat measures the 50 ms before the downbeat (§5.2). A seek
+  measures the next 50 ms of both streams from the seek point. Both lie on the tape.
+- **The cost** is a §2.2 row, measured in T5: up to 4,800 stereo frames read from SDRAM per
+  crossfade.
 - **Why seeks need it too.** A fixed equal-power seek would peak at +3 dB mid-fade on
   correlated audio, against §5.6's ±1 dB. Correlated seeks are common: the large-slowdown seek
   joins audio δ apart inside one bar, which is correlated on a pad or bass, and stutter and
