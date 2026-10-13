@@ -88,7 +88,7 @@ At 48 kHz the M7 has **10,000 cycles per stereo frame**. We budget like this:
 |---|---|---|
 | Framework, I/O, DC blockers, smoothing | ~200 | |
 | Retro recording | ~30 | Sequential SDRAM writes |
-| Crossfade shapes (P1, planned) | ~10 averaged; about 30,000 per crossfade | A correlation over 50 ms of both streams, read from SDRAM at each seam, move or seek. A 1/32 stutter at 120 BPM makes one every 62 ms. Measured in T5 |
+| Crossfade shapes (P1, planned) | ~10 averaged at a 1/32 stutter; a burst of about 30,000 per crossfade | A correlation over 50 ms of both streams, read from SDRAM at each seam, move or seek. A 1/32 stutter at 120 BPM makes one every 62 ms. The burst is what the 70% rule meets. At the 32-frame block, one crossfade takes 13% of a callback's budget, and two in one block take 27% (a replacement seek and a bar-locked move on the same line). At 16 frames that is 27% and 54%. Measured in T5 at the block size that runs |
 | Loop slot, Tape mode (×4) | ~50 each | Cubic interpolation |
 | Loop slot, WSOLA stretch | ~200–500 each | Decimated correlation search |
 | Loop slot, HQ phase vocoder | ~800–2,000 each | CMSIS-DSP real FFT |
@@ -855,6 +855,13 @@ them and never past valid data.
   Below 2 ms, a starting value, the loop fades out and in instead.
 - **A silent pre-roll** (a loop captured from the moment the music started): the seam is an 8 ms
   fade to silence before each first downbeat. It is pinned as a stated exception (§5.6).
+- **The margins also bound the correlation windows (§5.4).**
+  - The wrap seam's window reads the last 50 ms of pre-roll.
+  - A seek made F before the natural end reads the outgoing stream 50 ms − F past the end
+    (42 ms), inside the read margin, with F to spare.
+
+  A correlation window longer than the margins would read past valid data, so the three
+  lengths change together.
 
 ### 5.4 `crossfaded_seek`
 
@@ -876,7 +883,8 @@ this right:
 joined chooses the shape, as for the seam (§5.2): equal-gain when they are correlated,
 equal-power when they are not, or a blend.
 - **The window.** An entry into a downbeat measures the 50 ms before the downbeat (§5.2). A seek
-  measures the next 50 ms of both streams from the seek point. Both lie on the tape.
+  measures the next 50 ms of both streams from the seek point. Both lie on the tape, because the
+  margins are at least as long as the window (§5.3).
 - **The cost** is a §2.2 row, measured in T5: up to 4,800 stereo frames read from SDRAM per
   crossfade.
 - **Why seeks need it too.** A fixed equal-power seek would peak at +3 dB mid-fade on
