@@ -364,22 +364,33 @@ estimated from the edges *x* of the 8 pulses on each side:
      of those 8 values. A median of an even count is the mean of the middle two.
    - **value *v* at pulse *i*:** the median, over the side's edges, of *x_j* − *s*·(*j* − *i*).
 
-   The **second differences** *d_j* = *x_{j+1}* − 2·*x_j* + *x_{j−1}* carry the curvature and
-   the noise. Each one is 2·*c* plus noise, so their spread is noise alone.
-   - **The jitter estimate *σ̂*** is 1.4826 × the median of |*d_j* − median(*d*)|, divided by √6.
-   - **Its window** is the 40 pulses before the line and the 8 after: 44 second differences,
-     none using *x_i*. If the clock is younger than that, *σ̂* uses what there is.
-   - **Why 44.** Over the 12 inside the two fitted sides alone, *σ̂* came out below half the
-     true jitter in 4.9% of seeds, and every threshold scaled by it collapsed there.
-     - With 44 values that tail is 0.04%. (16 pulses each side, 28 values, gives 0.37%.)
-     - Under the earlier rule, without step 4's correction term, the 12-value tail left about
-       1 ramp line in 10,000 worse than its raw edge, by up to 428 samples (below).
+   The **jitter estimate *σ̂*** comes from **third differences**,
+   *e_j* = *x_{j+2}* − 3·*x_{j+1}* + 3·*x_j* − *x_{j−1}*.
+   - **What cancels.** Any curvature that is constant, or changes at a constant rate, cancels in
+     a third difference. So third differences carry noise alone, except for the few values
+     where a ramp starts or ends, which the median ignores.
+   - **The formula:** *σ̂* = 1.4826 × the median of |*e_j* − median(*e*)|, divided by √20.
+   - **Its window** is the 64 pulses before the line and the 8 after: 66 values, none using
+     *x_i*. If the clock is younger than that, *σ̂* uses what there is.
    - **No later finality.** The extra values are all in the past, so a loop does not become
      final any later.
-   - **Blind spot.** *σ̂* sees white jitter only: slow wander cancels in a second difference.
-   - **On the gate clock**, *σ̂* is about 0.005 samples. The keep and repair thresholds then sit
-     at their 1-sample floors, and the curvature tolerance is about 0.015, just above its 0.01
-     floor.
+   - **Why third differences, and why 66.** Measured at 50,000 seeds:
+
+     | Estimate | Below half the true jitter | Zero-jitter σ̂ with a ramp starting or ending in the window |
+     |---|---|---|
+     | 12 second differences, inside the fitted sides | 4.9% of seeds | — |
+     | 44 second differences | 0.044% | up to 11.35 samples |
+     | 66 third differences (adopted) | 0.004% | at most 0.03 |
+
+     - **The 44-value row** inflates because a ramp in the window splits its second differences
+       into two populations. On +20% over 2 bars, σ̂ is 11.35 samples (0.6·c) at the offset
+       where they balance, and 1.6 to 3 for two bars after an exponential ramp. That only
+       loosens thresholds, but a hiccup under 227 samples there would be kept.
+     - **The 12-value row's tail** is what broke the earlier rule (below).
+   - **Blind spot.** *σ̂* sees white jitter only: slow wander cancels in a third difference too.
+   - **On the gate clock**, *σ̂* is 0.0050 samples (the median for 0.005-rms jitter). The keep
+     and repair thresholds then sit at their 1-sample floors, and the curvature tolerance is
+     about 0.015, just above its 0.01 floor.
 2. **Keep an edge that lies on a straight line.** If *x_i* is within max(1 sample, 4·*σ̂*) of
    *v_left* or *v_right*, it stays. This is the path for a steady tempo. It is also the path for
    the first pulse of a phase shift or tempo change, which the side after it confirms.
@@ -387,7 +398,9 @@ estimated from the edges *x* of the 8 pulses on each side:
    curve. Fed a pure parabola *u²*, the repeated median gives slopes of ∓9 and a value of −16 at
    the line, all linear in the curvature. That gives two estimates of the curvature *c*:
    - **between the sides:** *c_between* = (*s_right* − *s_left*) / 18;
-   - **within the sides:** *c_within* = half the median of the 12 second differences.
+   - **within the sides:** *c_within* = half the median of the 12 second differences
+     *x_{j+1}* − 2·*x_j* + *x_{j−1}* inside the two fitted sides (6 each, none using *x_i*). Each
+     is 2·*c* plus noise.
 
    A tempo step has no curvature inside either side, but its slope difference reads as
    curvature. So *c* = *c_between* only when |*c_between* − *c_within*| ≤ max(¼·|*c_within*|,
@@ -427,21 +440,21 @@ estimated from the edges *x* of the 8 pulses on each side:
 The tolerances are measured choices: 1 and 64 samples, ¼ and 0.01 for the curvature check, the
 factor of 2, and the jitter multipliers.
 
-Two mechanisms carry the jitter cases: the correction term in step 4's bound, and the 44-value
-*σ̂* (step 1). Each was removed in turn and the rule rerun. Ramps are 6 or 7 families at 50,000
-seeds each; small steps are 21 cells (×1.002 to ×1.08 at the line, ±0.5 to ±10 samples) at
-20,000 seeds each:
+Two mechanisms carry the jitter cases: the correction term in step 4's bound, and a steady *σ̂*
+(step 1). Each was removed in turn and the rule rerun.
+- Ramp and steady clocks: 6 to 9 families at 20,000 to 50,000 seeds each.
+- Small steps: 21 cells, ×1.002 to ×1.08 at the line at ±0.5 to ±10 samples, at 20,000 seeds
+  each.
 
-| Rule | Ramp lines worse than the raw edge | Small tempo steps worse than the raw edge |
+| Rule | Ramp and steady lines worse than the raw edge | Small tempo steps worse than the raw edge |
 |---|---|---|
-| Both mechanisms | 0 in 350,000 | 0 in 420,000 |
-| Without the 44-value window | 0 in 300,000 | 1 in 420,000, by 8.9 samples |
-| Without the correction term | 0 in 300,000 | up to 9 in a cell of 20,000, by up to 159 samples |
+| The adopted rule | 0 in 180,000 | 0 in 420,000 |
+| With the earlier 12-value *σ̂* | 0 in 300,000 | 1 in 420,000, by 8.9 samples |
+| Without the correction term | 0 in 180,000 | 31 in 420,000: up to 11 in a cell, by up to 159 samples |
 | Without either (the earlier rule) | about 1 in 10,000, by up to 428 samples | up to 83 in a cell, by up to 161 samples |
 
-So the correction term is what makes a wrong curvature decision harmless. The wide window then
-steadies *σ̂* itself (below half the true jitter in 0.04% of seeds, against 4.9%), and with it
-every threshold scaled by *σ̂*.
+So the correction term is what makes a wrong curvature decision harmless. The steady *σ̂* then
+keeps every threshold scaled by it from collapsing in a bad seed.
 
 With both mechanisms, the repair multiplier hardly matters. Every multiplier from 6 to 20 gave no
 line worse than its raw edge:
@@ -449,11 +462,14 @@ line worse than its raw edge:
 - in every steady and step family tested.
 
 20 is kept for margin against noise shapes not tried, such as Gaussian tails, and because a
-repair is only worth making on clear evidence. The keep multiplier (4) made no difference
-anywhere from 3 to 5, in a 200-seed sweep.
+repair is only worth making on clear evidence.
 
-Measured on the gate clock at 4 PPQN and 120 BPM, in a double-precision probe, over 125
-scenarios. Errors are in samples, the worst over a line and the 3 pulses either side; "—" means
+The keep multiplier made no difference anywhere from 2 to 8, measured under the adopted rule at
+280,000 lines per setting: none came out worse than the raw edge, and a 100-sample hiccup on a
+steady clock at ±2 was repaired in all 20,000 seeds. 4 sits in the middle.
+
+Measured on the gate clock at 4 PPQN and 120 BPM, in a double-precision probe, over 132
+scenarios: the 136 of earlier rounds, less four jittered ones that moved to the jitter table. Errors are in samples, the worst over a line and the 3 pulses either side; "—" means
 not measured. The implementation pins the same cases in `float`.
 
 | Case | History | Edge | Estimate |
@@ -477,7 +493,7 @@ the step grid at 20,000 per cell:
 | +20% over 2 bars, ±2 to ±20 samples | the jitter | the jitter | 0 |
 | Tempo steps of ×1.01 at ±10 samples, and ×1.1 at ±20 | the jitter | the jitter | 0 |
 | Tempo steps of ×1.002 to ×1.08 at the line, ±0.5 to ±10 samples (21 cells) | the jitter | the jitter | 0 |
-| A 1,800-sample hiccup on +10% over 8 bars, ±2 samples | 1,802 | 11.7 | 0, and repaired in every seed |
+| A 1,800-sample hiccup on +10% over 8 bars, ±2 samples | 1,802 | 12.1 | 0, and repaired in every seed |
 
 **The limits.** In each of these cases the two sides disagree about where the pulse belongs, so
 step 4 cannot repair it and the edge is kept, at its own error:
@@ -510,8 +526,9 @@ And three under jitter:
 | Remove | And this fails |
 |---|---|
 | The curvature check | A 1,800-sample hiccup on the pulse of a ×1.1 step lands 533 samples off, not on the line |
-| The correction term | The small-step cells: up to 9 of 20,000 lines, by up to 159 samples |
-| The 44-value window | *σ̂*'s own tail: below half the true jitter in 4.9% of seeds, not 0.04% |
+| The correction term | The small-step cells: up to 11 of 20,000 lines in a cell, by up to 159 samples |
+| The 66-value window | *σ̂*'s own tail: below half the true jitter in 4.9% of seeds (12 values), not 0.004% |
+| Third differences (back to second) | A ramp inside the window inflates *σ̂* to 11.35 samples, not 0.03 |
 
 The other notes:
 
@@ -825,9 +842,20 @@ this right:
   - a mid-bar start (a late press, §3.4);
   - a line learned after it passed (§3.6);
   - the first move of a large slowdown at the wrap (§5.2);
-  - later, stutter, slice re-trigger and reverse. A second read
-  head starts at the target position, and an equal-power crossfade hands over. It lasts 3 ms to
-  start with, measured before it is pinned.
+  - later, stutter, slice re-trigger and reverse.
+
+  A second read head starts at the target position, and a crossfade hands over. It lasts 3 ms
+  to start with, measured before it is pinned.
+
+**One shape rule for every crossfade, seam or seek.** The correlation of the two streams being
+joined chooses the shape, as for the seam (§5.2): equal-gain when they are correlated,
+equal-power when they are not, or a blend.
+- **Why seeks need it too.** A fixed equal-power seek would peak at +3 dB mid-fade on
+  correlated audio, against §5.6's ±1 dB. Correlated seeks are common: the large-slowdown seek
+  joins audio δ apart inside one bar, which is correlated on a pad or bass, and stutter and
+  slice re-trigger do the same.
+- **Starting from silence.** A seek from silence has zero energy on one side, which counts as
+  correlated, so it fades in at equal gain.
 
 ### 5.5 Smoothing and DC
 
