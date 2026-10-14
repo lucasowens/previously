@@ -322,6 +322,12 @@ precondition.
 **Lesson, a new one:** a test cannot see a bug that writes where nothing else reads. When a
 property is arithmetic on sizes, prove it at compile time.
 
+The review then found its mirror image: a read of memory nothing had written. Setting one flag
+reads the rest of its word, so a history declared without `{}` read uninitialized words, which is
+undefined behaviour. No result changed, since every recorded slot writes its own bit before it is
+tested, and neither ASan nor UBSan reports such a read. The flags now start at zero however the
+history is declared, and a test builds one over memory full of ones to show it.
+
 ---
 
 ## 8. Getting pulses in, and clock out

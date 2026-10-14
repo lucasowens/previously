@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <new>
 #include <optional>
 #include <random>
 #include <span>
@@ -1122,6 +1124,21 @@ static_assert(std::tuple_size_v<decltype(clock_history<33>::fill_in_bits)> == 2)
 // The engine's history at 1,536 pulses (DESIGN.md §2.3): 12 KB each of filtered times and edges,
 // and 192 bytes of flags.
 static_assert(sizeof(clock_history<1'536>) == (2 * 12'288) + 192);
+
+TEST_CASE("a history needs no initializing: its flags start clear")
+{
+    // Setting one flag reads the rest of its word, so the flags must start clear even when the
+    // owner leaves the history uninitialized. Built over memory full of ones, standing in for
+    // whatever an uninitialized history would hold.
+    alignas(clock_history<33>) std::array<std::byte, sizeof(clock_history<33>)> memory{};
+    memory.fill(std::byte{0xFF});
+
+    const auto* history = ::new (memory.data()) clock_history<33>;  // default-initialized: no {}
+
+    for (const std::uint32_t word : history->fill_in_bits) {
+        CHECK(word == 0U);
+    }
+}
 
 TEST_CASE("every slot keeps its own fill-in flag, in a history of any size")
 {

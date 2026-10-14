@@ -119,9 +119,10 @@ struct pulse_edge {
 };
 
 /// The memory a clock_tracker remembers past pulses in. The owner provides it, so firmware can
-/// choose which memory it lives in, and it need not be initialized. `Capacity` is how far back
-/// questions can reach: 16 bars in 4/4 is 256 pulses at 4 PPQN, 1,536 at 24 PPQN. Each pulse
-/// costs 16 bytes and a bit.
+/// choose which memory it lives in, and it need not be initialized: every time is written before
+/// it is read, and the flags start clear by themselves. `Capacity` is how far back questions can
+/// reach: 16 bars in 4/4 is 256 pulses at 4 PPQN, 1,536 at 24 PPQN. Each pulse costs 16 bytes and
+/// a bit.
 template <std::size_t Capacity>
 struct clock_history {
     static constexpr std::size_t bits_per_word = std::numeric_limits<std::uint32_t>::digits;
@@ -129,8 +130,9 @@ struct clock_history {
     std::array<sample_time, Capacity> filtered;  // what the filter made of each pulse
     std::array<sample_time, Capacity> edges;     // each pulse as it arrived
 
-    // One bit per pulse, set for a fill-in.
-    std::array<std::uint32_t, (Capacity + bits_per_word - 1) / bits_per_word> fill_in_bits;
+    // One bit per pulse, set for a fill-in. Zeroed however the history is declared, because
+    // setting one bit reads the rest of its word.
+    std::array<std::uint32_t, (Capacity + bits_per_word - 1) / bits_per_word> fill_in_bits{};
 };
 
 class clock_tracker {
