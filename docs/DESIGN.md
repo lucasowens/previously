@@ -174,7 +174,8 @@ so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48
 | Stage | Flash used | Mostly |
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
-| With the clock wiring and hiccup handling (P1) | 73% (95 KB) | About 11 KB of engine and tracker code at `-O3` with LTO |
+| With the clock wiring and hiccup handling (P1) | 74% (97,504 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
+| With the tracker's edge times (P1) | 75% (98,388 bytes) | |
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
@@ -184,24 +185,31 @@ build fails if the flash budget is exceeded (T0). When it does:
 2. Then move to libDaisy's **bootloader** layout: the program lives in the 8 MB QSPI flash and
    runs from SRAM.
 
-**Internal SRAM.** Fixed engine state lives in internal SRAM, not SDRAM:
+**Internal SRAM.** Fixed engine state lives in internal SRAM, not SDRAM. The variables
+(`.data` and `.bss`) move when the firmware moves to the bootloader layout:
 
-| Region | Where it lives |
-|---|---|
-| AXI SRAM, 512 KB | Default under the current linker script |
-| DTCM, 128 KB | Shared with `.data` and the stack under the QSPI bootloader layout; `.bss` is already about 52 KB there |
+| Region | Current layout | QSPI bootloader layout |
+|---|---|---|
+| AXI SRAM, 512 KB | The variables | The program |
+| DTCM, 128 KB | The stack | The variables and the stack |
+
+**The RAM budget (T0).** The build fails if the variables outgrow **112 KiB**: DTCM less 16 KiB
+for the stack. Within it, the move to the bootloader layout stays open.
+
+- **Today** they take 80,396 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (26,000 bytes, 24,768 of them the clock history).
+- **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
+  LTO, summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
+  start-up.
 
 Budget items so far:
 
 | Item | Size | Note |
 |---|---|---|
-| Clock tracker history | 8 bytes × capacity | The owner provides it: 256 entries (2 KB) cover 16 bars at 4 PPQN; 1,536 (12 KB) at 24 PPQN |
-| Clock tracker edge times (P1, planned) | 8 bytes and 1 bit × capacity | Each pulse's raw edge and a fill-in flag, for capture (§3.4): another 12 KB and 192 bytes at 1,536 entries |
+| Clock tracker history | 16 bytes and 1 bit × capacity | The owner provides it (`clock_history`): each pulse's filtered time, its raw edge and a fill-in flag. 256 entries (4 KB and 32 bytes) cover 16 bars at 4 PPQN. The engine's 1,536 (24 KB and 192 bytes) cover 16 bars at 24 PPQN. |
 | Loop page tables (P1, planned) | 2 bytes per page | At most 47 pages per loop |
 
-The firmware owner places these buffers explicitly. Today T0 checks only flash. Adding an SRAM
-budget check from the linker's memory report is an open item, due before the engine state grows
-past a few KB.
+The firmware owner places these buffers explicitly.
 
 **SDRAM access.** Sequential access (recording, Tape playback) is cheap. Random access (granular,
 WSOLA search) costs cache misses. Hot read windows can be staged into internal SRAM, measured
@@ -255,8 +263,18 @@ grid. Full explanation, measurements and the mutation-testing record:
   - Integer pulse indices; bars are `index / (pulses_per_beat × beats_per_bar)`. The **meter**
     (beats per bar, default 4) is configurable.
   - Bars use floor division, so pulses before a reset fall in negative bars.
-  - A history of filtered pulse times, in storage provided by the owner, answers questions
-    about the past; extrapolation answers questions about the future.
+  - A history of past pulses, in storage provided by the owner (`clock_history`), answers
+    questions about the past; extrapolation answers questions about the future.
+- **Two times per pulse.** The history keeps each pulse's filtered time and its raw edge.
+  - **The filtered times serve the grid:** predictions, clock out and the existing queries.
+  - **The edges serve capture.** A filtered time is built from earlier pulses only. Capture
+    estimates where a bar line was from the pulses on both sides of it, which needs the edges
+    themselves (§3.4).
+  - **A fill-in** has no real edge. Its edge time is the slot it was filled in at, and a flag
+    (one bit per entry) marks it.
+  - `edge(index)` reads them, labelled like every other query. It never extrapolates: a pulse has
+    an edge once it is recorded, which for a fill-in is when its slot closes, half a period
+    after its time.
 - **PPQN:** configurable. The gate preset is 4 (16th notes); 1, 2 and 24 are planned as UI
   choices. MIDI is 24.
 - **Presets, measured:**
@@ -290,14 +308,6 @@ grid. Full explanation, measurements and the mutation-testing record:
   - **source priority:** gate, then MIDI, then the tempo set by the first loop (§4.1), then tap
     tempo. Patching a clock takes over smoothly.
   - PPQN selection from the UI
-  - **edge times**, for capture.
-    - Next to each filtered time, the history keeps the pulse's raw edge.
-    - A filled-in pulse keeps its predicted time, and a flag marking it as a fill-in (one bit
-      per entry).
-    - The filtered times serve the future, and capture estimates the past from the edges
-      (§3.4).
-    - The change only adds: the tracker's constructor takes a second span, and the engine's
-      clock history grows from 12 KB to 24 KB, plus 192 bytes of flags.
 
 ### 3.4 Retrospective capture (the headline feature)
 
@@ -1333,7 +1343,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). Next, in three PRs: the paged tape, recorder, DC blocker and tracker edge times; capture and playback; the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); next, the paged tape, recorder, DC blocker and `-ffp-contract=off`; then capture and playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
