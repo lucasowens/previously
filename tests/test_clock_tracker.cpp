@@ -42,8 +42,8 @@ struct tracked_clock {
     tracked_clock& operator=(tracked_clock&&)      = delete;
     ~tracked_clock()                               = default;
 
-    std::array<sample_time, 2'048> history{};
-    clock_tracker                  tracker;  // declared after history, which it refers to
+    clock_history<2'048> history{};
+    clock_tracker        tracker;  // declared after history, which it refers to
 };
 
 /// Converts a reference time in samples to the tracker's fixed-point time.
@@ -927,14 +927,274 @@ TEST_CASE("pulses older than the history are no longer answerable")
 TEST_CASE("the history size is chosen by the owner")
 {
     // 16 bars at 4 PPQN needs only 256 entries.
-    std::array<sample_time, 256> history{};
-    clock_tracker                tracker{clock_tracker_config::gate(rate_48k), history};
+    clock_history<256> history{};
+    clock_tracker      tracker{clock_tracker_config::gate(rate_48k), history};
 
     feed(tracker, steady_clock(0.0, gate_period, 1'000));
 
     CHECK(tracker.history_capacity() == 256);
     CHECK(tracker.pulse_time(1'000 - 256).has_value());
     CHECK_FALSE(tracker.pulse_time(1'000 - 257).has_value());
+}
+
+// ---- Edges, for capture
+// ---------------------------------------------------------------------------
+
+TEST_CASE("every real pulse keeps its raw edge exactly, whichever path recorded it")
+{
+    // The MIDI preset filters hard, so a filtered time sits far from its edge. The clock takes
+    // five of the paths that record a real pulse: acquisition, tracking, a hiccup, a phase shift
+    // (an outlier, then a re-anchor) and a tempo change (an outlier, then re-acquisition). The
+    // other three (a stray first edge, a return from freewheel, a retirement) have tests below.
+    //
+    // Each displacement is 0.4 of a period or more. Measured over 2,000 seeds of this jitter, each
+    // displaced pulse clears the quarter-period outlier threshold by at least 73 samples.
+    std::vector<double> truth = steady_clock(0.0, midi_period, 150);
+    truth[100] += midi_period * 0.4;  // a hiccup
+
+    for (int i = 0; i < 50; ++i) {  // a phase shift of 0.4 of a period
+        truth.push_back(truth[149] + (midi_period * (i + 1.4)));
+    }
+    for (int i = 0; i < 50; ++i) {  // a tempo change to 1.6 times the period
+        truth.push_back(truth[199] + (midi_period * 1.6 * (i + 1)));
+    }
+
+    const auto measured = with_jitter(truth, 48.0, 11U);
+
+    tracked_clock clock{clock_tracker_config::midi(rate_48k)};
+    feed(clock.tracker, measured);
+    REQUIRE(clock.tracker.latest_pulse() == 249);
+
+    double furthest_filtered = 0.0;
+
+    for (std::size_t i = 0; i < measured.size(); ++i) {
+        CAPTURE(i);
+
+        const auto       index = static_cast<std::int64_t>(i);
+        const pulse_edge edge  = known(clock.tracker.edge(index));
+
+        CHECK(edge.time == at(measured[i]));
+        CHECK_FALSE(edge.filled_in);
+
+        furthest_filtered = std::max(
+            furthest_filtered,
+            std::abs(error_in_samples(known(clock.tracker.pulse_time(index)), measured[i])));
+    }
+
+    // The edges are not the filtered times under another name. Measured: 68.3 samples apart at
+    // the furthest (pulse 19, while the fit is young), and 46 to 77 over 2,000 seeds.
+    CHECK(furthest_filtered > 30.0);
+}
+
+TEST_CASE("a filled-in pulse is marked, and kept at the slot it was filled in at")
+{
+    const auto truth = steady_clock(0.0, gate_period, 120);
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed(clock.tracker, std::span{truth}.first(100));
+
+    // The clock stops. Slot 110 stays open until half a period after it, for a late pulse to
+    // claim: until then it is predicted, but it has no edge.
+    const sample_time slot_110_closes = at(truth[110] + (gate_period / 2.0));
+    const sample_time one_tick        = sample_time::from_ticks(1);
+
+    clock.tracker.advance(slot_110_closes - one_tick);
+    REQUIRE(clock.tracker.state() == clock_state::freewheeling);
+
+    CHECK_FALSE(clock.tracker.edge(110).has_value());
+    CHECK(clock.tracker.pulse_time(110).has_value());
+
+    for (std::int64_t i = 100; i < 110; ++i) {
+        CAPTURE(i);
+
+        const pulse_edge filled = known(clock.tracker.edge(i));
+
+        CHECK(filled.filled_in);
+        CHECK(filled.time == known(clock.tracker.pulse_time(i)));
+        CHECK(std::abs(error_in_samples(filled.time, truth[static_cast<std::size_t>(i)])) < 0.01);
+    }
+
+    SUBCASE("a pulse a tick before the slot closes claims it")
+    {
+        clock.tracker.pulse(slot_110_closes - one_tick);
+
+        const pulse_edge real = known(clock.tracker.edge(110));
+
+        CHECK(clock.tracker.latest_pulse() == 110);
+        CHECK(real.time == slot_110_closes - one_tick);
+        CHECK_FALSE(real.filled_in);
+    }
+
+    SUBCASE("a pulse as the slot closes is the next pulse, after a fill-in")
+    {
+        clock.tracker.pulse(slot_110_closes);
+
+        CHECK(clock.tracker.latest_pulse() == 111);
+        CHECK(known(clock.tracker.edge(110)).filled_in);
+        CHECK(known(clock.tracker.edge(111)).time == slot_110_closes);
+        CHECK_FALSE(known(clock.tracker.edge(111)).filled_in);
+    }
+}
+
+TEST_CASE("fill-ins retired from a slowed clock give way to its real edges")
+{
+    // The clock slows to a third of its tempo. The first slow pulse comes after a gap long enough
+    // to read as a stop, so two pulses are filled in before it, and two more before the second.
+    // The second confirms the slowdown and retires the fill-ins (clock-tracking.md §6).
+    std::vector<double> truth = steady_clock(0.0, gate_period, 100);
+    for (int i = 1; i <= 6; ++i) {
+        truth.push_back(truth[99] + (gate_period * 3.0 * i));
+    }
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed(clock.tracker, std::span{truth}.first(101));
+
+    // Before the retirement: two fill-ins, then the first slow pulse.
+    CHECK(known(clock.tracker.edge(100)).filled_in);
+    CHECK(known(clock.tracker.edge(101)).filled_in);
+    CHECK(known(clock.tracker.edge(102)).time == at(truth[100]));
+    CHECK_FALSE(known(clock.tracker.edge(102)).filled_in);
+
+    feed(clock.tracker, std::span{truth}.subspan(101, 1));
+
+    // At it: the two real pulses take indices 100 and 101. What was stored after them is no
+    // longer recorded, so it cannot be read.
+    REQUIRE(clock.tracker.latest_pulse() == 101);
+    CHECK_FALSE(clock.tracker.edge(102).has_value());
+
+    // After it, every pulse is real, including those stored where fill-ins used to be.
+    feed(clock.tracker, std::span{truth}.subspan(102));
+    REQUIRE(clock.tracker.latest_pulse() == 105);
+
+    for (std::int64_t i = 100; i <= 105; ++i) {
+        CAPTURE(i);
+
+        const pulse_edge edge = known(clock.tracker.edge(i));
+
+        CHECK(edge.time == at(truth[static_cast<std::size_t>(i)]));
+        CHECK_FALSE(edge.filled_in);
+    }
+}
+
+TEST_CASE("a stray first edge is replaced among the edges too")
+{
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    clock.tracker.pulse(at(0.0));
+
+    const auto real = steady_clock(5.0 * 48'000.0, gate_period, 10);  // 5 s later
+    feed(clock.tracker, real);
+
+    CHECK(known(clock.tracker.edge(0)).time == at(real[0]));
+    CHECK(known(clock.tracker.edge(9)).time == at(real[9]));
+}
+
+TEST_CASE("edges carry the same labels as every other query, even while a reset is pending")
+{
+    const auto truth = steady_clock(0.0, gate_period, 40);
+
+    SUBCASE("an applied reset")
+    {
+        tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+        feed(clock.tracker, std::span{truth}.first(38));
+        clock.tracker.reset(at(truth[37]));
+
+        CHECK(known(clock.tracker.edge(0)).time == at(truth[37]));
+        CHECK(known(clock.tracker.edge(-1)).time == at(truth[36]));
+    }
+
+    SUBCASE("a pending reset, two pulses ahead")
+    {
+        // The pulse the reset will claim is 0, and recorded pulses count back from it.
+        tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+        feed(clock.tracker, truth);
+        clock.tracker.reset(at(truth[39] + (gate_period * 2.0)));
+
+        CHECK(clock.tracker.pulse_at_or_before(at(truth[39])) == -2);
+        CHECK(known(clock.tracker.edge(-2)).time == at(truth[39]));
+        CHECK_FALSE(clock.tracker.edge(0).has_value());
+    }
+}
+
+// A word of flags holds 32 pulses, so 33 need a second word.
+static_assert(std::tuple_size_v<decltype(clock_history<32>::fill_in_bits)> == 1);
+static_assert(std::tuple_size_v<decltype(clock_history<33>::fill_in_bits)> == 2);
+
+// The engine's history at 1,536 pulses (DESIGN.md §2.3): 12 KB each of filtered times and edges,
+// and 192 bytes of flags.
+static_assert(sizeof(clock_history<1'536>) == (2 * 12'288) + 192);
+
+TEST_CASE("every slot keeps its own fill-in flag, in a history of any size")
+{
+    // 33 pulses: the last slot's flag is the only bit in its word. Stops of 2 to 5 pulses, each
+    // long enough to freewheel, wrap the history three times.
+    clock_history<33> history{};
+    clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+    std::vector<bool> missing;
+    for (const std::size_t stop : {2U, 3U, 4U, 5U, 2U, 3U, 4U, 5U}) {
+        missing.insert(missing.end(), 8, false);
+        missing.insert(missing.end(), stop, true);
+    }
+    missing.insert(missing.end(), 8, false);
+
+    for (std::size_t slot = 0; slot < missing.size(); ++slot) {
+        if (!missing[slot]) {
+            tracker.pulse(at(gate_period * static_cast<double>(slot)));
+        }
+    }
+
+    const auto latest = static_cast<std::int64_t>(missing.size()) - 1;
+    REQUIRE(tracker.latest_pulse() == latest);
+
+    for (std::int64_t i = latest - 32; i <= latest; ++i) {
+        CAPTURE(i);
+
+        const pulse_edge edge = known(tracker.edge(i));
+
+        CHECK(edge.filled_in == missing[static_cast<std::size_t>(i)]);
+        CHECK(std::abs(error_in_samples(edge.time, gate_period * static_cast<double>(i))) < 0.01);
+    }
+}
+
+TEST_CASE("an edge is known only while its pulse is in the history")
+{
+    clock_history<256> history{};
+    clock_tracker      tracker{clock_tracker_config::gate(rate_48k), history};
+
+    const auto truth = steady_clock(0.0, gate_period, 1'000);
+    feed(tracker, truth);
+
+    CHECK(known(tracker.edge(1'000 - 256)).time == at(truth[1'000 - 256]));
+    CHECK_FALSE(tracker.edge(1'000 - 257).has_value());
+
+    // The future has a predicted time, but no edge yet.
+    CHECK(tracker.pulse_time(1'000).has_value());
+    CHECK_FALSE(tracker.edge(1'000).has_value());
+}
+
+TEST_CASE("a long silence leaves its fill-ins marked, the skipped ones included")
+{
+    // 5,000 silent periods overflow the 2,048-pulse history, so most fill-ins are skipped and the
+    // history is written through once (see "a long silence with no advance() calls is handled in
+    // bounded work").
+    for (const std::size_t silent_periods : {100U, 5'000U}) {
+        CAPTURE(silent_periods);
+
+        const auto truth = steady_clock(0.0, gate_period, 100 + silent_periods + 60);
+
+        tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+        feed(clock.tracker, std::span{truth}.first(100));
+        feed(clock.tracker, std::span{truth}.subspan(100 + silent_periods));
+
+        const auto last_fill_in = static_cast<std::int64_t>(100 + silent_periods) - 1;
+        const auto oldest_kept  = static_cast<std::int64_t>(truth.size()) - 2'048;
+
+        CHECK(known(clock.tracker.edge(last_fill_in)).filled_in);
+        CHECK(known(clock.tracker.edge(std::max<std::int64_t>(oldest_kept, 100))).filled_in);
+        CHECK_FALSE(known(clock.tracker.edge(last_fill_in + 1)).filled_in);
+        CHECK(known(clock.tracker.edge(last_fill_in + 1)).time ==
+              at(truth[static_cast<std::size_t>(last_fill_in) + 1]));
+    }
 }
 
 // ---- Robustness
@@ -948,6 +1208,16 @@ TEST_CASE("absurd indices are refused rather than overflowing")
     CHECK_FALSE(clock.tracker.pulse_time(30'000'000'000'000).has_value());
     CHECK_FALSE(clock.tracker.bar_start(INT64_MAX / 16 + 1).has_value());
     CHECK_FALSE(clock.tracker.bar_start(INT64_MIN / 16).has_value());
+
+    // After a reset the labels are offset from the stored sequence, so an extreme index would
+    // overflow on the way to it. Built with UBSan, an overflow would abort the test.
+    clock.tracker.reset(at(gate_period * 5.0));
+    REQUIRE(clock.tracker.edge(4).has_value());
+
+    CHECK_FALSE(clock.tracker.edge(INT64_MAX).has_value());
+    CHECK_FALSE(clock.tracker.edge(INT64_MIN).has_value());
+    CHECK_FALSE(clock.tracker.pulse_time(INT64_MAX).has_value());
+    CHECK_FALSE(clock.tracker.pulse_time(INT64_MIN).has_value());
 }
 
 TEST_CASE("the period never collapses to zero")
@@ -982,6 +1252,7 @@ TEST_CASE("tracking never allocates")
             clock.tracker.pulse(at(time));
             clock.tracker.advance(at(time + 1.0));
             static_cast<void>(clock.tracker.bar_at_or_before(at(time)));
+            static_cast<void>(clock.tracker.edge(0));
         }
     }
 

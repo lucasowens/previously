@@ -204,9 +204,23 @@ knife edge.
 *before* calling `advance()` for the end of that block. `pulse(when)` also advances to `when`
 itself, so the result never depends on how often `advance()` runs. A test pins this down.
 
-**History storage belongs to the owner.** The history (16 KB for 2,048 pulses) is a `std::span`
-handed in by whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs
-256 entries at 4 PPQN but 1,536 at 24 PPQN.
+**History storage belongs to the owner.** The history is a `clock_history<Capacity>` provided by
+whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs 256 entries
+at 4 PPQN but 1,536 at 24 PPQN. The engine keeps 1,536: 24 KB and 192 bytes.
+
+**Two times per pulse.** Each entry holds the pulse's filtered time and its raw edge, plus one bit
+saying whether it was filled in:
+
+- **The filtered time** is what the grid runs on: predictions, clock out, `pulse_time()`. It is
+  built from earlier pulses only, which is all a prediction can have.
+- **The raw edge** is for retro capture. Asked where a bar line *was*, capture can also use the
+  pulses that came after it. DESIGN.md §3.4 measured the difference: after a phase shift or a
+  tempo change near a line, the filtered times are up to 120 samples off, and the edges 0.01.
+- **A fill-in** has no real edge: its edge is the slot it was filled in at, and the bit marks it,
+  so capture can leave fill-ins out of its jitter estimate.
+
+The three arrays live in one `clock_history`, so their sizes cannot disagree: a mismatch would not
+compile. The tracker sees them as spans.
 
 **Where hiccup immunity does not apply.** It needs a confirmed tempo: three pulses in the fit.
 Right after acquisition, the tempo rests on one interval, so any outlier re-acquires. After a
@@ -284,6 +298,29 @@ compound case, and an overflow. Each fix got a test, then each fix was removed t
 | Stop detection ignores the pending outlier | Caught | — (fix 3 was later reverted: the follow-up review showed it moved the inconsistency to the commoner case of a hiccup before a short stop, where the misnumbering grows with the hiccup; both cases are now pinned) |
 | Overflow guard (UBSan) | Caught | — |
 | "Same length" tolerance widened to a half | Caught | — |
+
+**Round 5** (edge times, PR #7). Before the round, reading `edge()` found a lower bound that no
+test could fail: an index more than 2⁴⁰ pulses old. Labels are a sequence minus an offset that is
+never negative, so the conversion cannot overflow downwards, and the oldest-sequence check refuses
+such an index anyway. The bound was removed, and `relabel()` now states the offset as a
+precondition.
+
+| Planted bug | First result | Action |
+|---|---|---|
+| Tracking stores the filtered time as the edge | Caught | — |
+| A stray first edge replaces only the filtered time | Caught | — |
+| Fill-ins not flagged | Caught | — |
+| A flag is set but never cleared | Caught | Only where a slot is reused: after a retirement, and where stops wrap the history |
+| The pulse returning from freewheel flagged as a fill-in | Caught | — |
+| The pulse re-recorded at a retirement flagged as a fill-in | Caught | — |
+| `edge()` ignores a pending reset | Caught | — |
+| `edge()` has no upper bound | Caught | Also by UBSan: an absurd index overflowed on its way to a sequence |
+| `edge()` has no lower bound | Caught | — |
+| Every flag in one word; the flag read from the wrong bit | Caught | — |
+| Flag words rounded down, not up | **Survived** | With 33 pulses the missing word fell in the struct's padding, so nothing read or wrote out of bounds. Now pinned at compile time: `static_assert`s on the word count, and on the engine's history size (24,768 bytes). |
+
+**Lesson, a new one:** a test cannot see a bug that writes where nothing else reads. When a
+property is arithmetic on sizes, prove it at compile time.
 
 ---
 

@@ -59,6 +59,9 @@ constexpr std::int64_t max_index_distance = 1'099'511'627'776;
 /// The smallest allowed phase gain: below this the tracker would barely move.
 constexpr float min_phase_gain = 0.01F;
 
+/// Fill-in flags are packed one bit per pulse into the words of clock_history::fill_in_bits.
+constexpr std::size_t bits_per_word = std::numeric_limits<std::uint32_t>::digits;
+
 /// Multiplies a time by a gain, rounding to the nearest tick. Gains and errors are small, so
 /// float precision is ample here; the result goes back into exact integer time.
 [[nodiscard]] sample_time scale(sample_time value, float gain) noexcept
@@ -85,8 +88,12 @@ constexpr float min_phase_gain = 0.01F;
 }  // namespace
 
 clock_tracker::clock_tracker(const clock_tracker_config& config,
-                             std::span<sample_time>      history) noexcept
-    : history_{history},
+                             std::span<sample_time>      filtered,
+                             std::span<sample_time>      edges,
+                             std::span<std::uint32_t>    fill_in_bits) noexcept
+    : history_{filtered},
+      edges_{edges},
+      fill_in_bits_{fill_in_bits},
       pulses_per_beat_{std::max<std::int64_t>(config.pulses_per_beat, 1)},
       pulses_per_bar_{pulses_per_beat_ * std::max<std::int64_t>(config.beats_per_bar, 1)},
       steady_alpha_{std::clamp(config.phase_gain, min_phase_gain, 1.0F)},
@@ -101,15 +108,10 @@ clock_tracker::clock_tracker(const clock_tracker_config& config,
     expects(config.pulses_per_beat > 0);
     expects(config.beats_per_bar > 0);
     expects(config.phase_gain > 0.0F && config.phase_gain <= 1.0F);
-    expects(history.size() >= 2);
 }
 
 void clock_tracker::pulse(sample_time when) noexcept
 {
-    if (history_.empty()) {
-        return;
-    }
-
     // Every state except no_clock has seen a real pulse, so `previous_raw` is a real edge
     // wherever it is used below; the fallback only serves no_clock, which ignores it.
     const sample_time previous_raw = latest_raw_.value_or(when);
@@ -137,7 +139,7 @@ void clock_tracker::pulse(sample_time when) noexcept
             if (interval > max_acquisition_interval_) {
                 // The first edge was stray (a cable being patched, a power-on glitch): this
                 // pulse takes its place, and acquisition starts again from here.
-                history_[static_cast<std::size_t>(latest_sequence_) % history_.size()] = when;
+                store(latest_sequence_, when, pulse_edge{.time = when});
             }
             else {
                 lock_on_interval(when, interval);
@@ -153,7 +155,7 @@ void clock_tracker::pulse(sample_time when) noexcept
             }
             else {
                 outlier_interval_.reset();  // back on the grid: any outlier was a one-off
-                track(error);
+                track(when);
             }
             break;
         }
@@ -290,6 +292,35 @@ std::optional<sample_time> clock_tracker::pulse_time(std::int64_t index) const n
     return predicted_time(sequence);
 }
 
+std::optional<pulse_edge> clock_tracker::edge(std::int64_t index) const noexcept
+{
+    if (latest_sequence_ < 0) {
+        return std::nullopt;
+    }
+
+    // Only recorded pulses have edges. The label is checked before it becomes a sequence: the
+    // offset is never negative, so once `index` is at most the latest label, adding it cannot
+    // overflow.
+    const std::int64_t offset = effective_offset();
+
+    if (index > latest_sequence_ - offset) {
+        return std::nullopt;
+    }
+
+    const std::int64_t sequence = index + offset;
+
+    if (sequence < oldest_sequence()) {
+        return std::nullopt;
+    }
+
+    const std::size_t slot = slot_of(sequence);
+
+    return pulse_edge{
+        .time      = edges_[slot],
+        .filled_in = ((fill_in_bits_[slot / bits_per_word] >> (slot % bits_per_word)) & 1U) != 0U,
+    };
+}
+
 std::optional<std::int64_t> clock_tracker::pulse_at_or_before(sample_time when) const noexcept
 {
     if (const auto sequence = sequence_at_or_before(when)) {
@@ -388,7 +419,7 @@ void clock_tracker::handle_outlier(sample_time when, sample_time interval) noexc
     predicted_ = old_prediction + (period_ * slots_ahead);
 }
 
-void clock_tracker::track(sample_time error) noexcept
+void clock_tracker::track(sample_time when) noexcept
 {
     ++pulses_in_fit_;
 
@@ -401,13 +432,14 @@ void clock_tracker::track(sample_time error) noexcept
     const float alpha = std::max(ls_alpha, steady_alpha_);
     const float beta  = std::max(ls_beta, steady_beta_);
 
+    const sample_time error     = when - predicted_;
     const sample_time corrected = predicted_ + scale(error, alpha);
 
     // Defensive floor, unreachable with real input: a correction is at most a quarter period and
     // real intervals are at least the double-trigger window apart. It stays because a zero
     // period would be a division by zero on the device.
     period_ = std::max(period_ + scale(error, beta), double_trigger_window_);
-    record(corrected);
+    record(corrected, pulse_edge{.time = when});
     predicted_ = corrected + period_;
 }
 
@@ -475,7 +507,7 @@ void clock_tracker::fill_in_closed_slots(sample_time now) noexcept
     }
 
     for (std::int64_t slot = skipped; slot < closed; ++slot) {
-        record(predicted_);
+        record(predicted_, pulse_edge{.time = predicted_, .filled_in = true});
         apply_pending_reset(predicted_, latest_sequence_);
         predicted_ += period_;
     }
@@ -485,8 +517,26 @@ void clock_tracker::fill_in_closed_slots(sample_time now) noexcept
 
 void clock_tracker::record(sample_time when) noexcept
 {
+    record(when, pulse_edge{.time = when});
+}
+
+void clock_tracker::record(sample_time filtered, pulse_edge raw) noexcept
+{
     ++latest_sequence_;
-    history_[static_cast<std::size_t>(latest_sequence_) % history_.size()] = when;
+    store(latest_sequence_, filtered, raw);
+}
+
+void clock_tracker::store(std::int64_t sequence, sample_time filtered, pulse_edge raw) noexcept
+{
+    const std::size_t   slot = slot_of(sequence);
+    std::uint32_t&      word = fill_in_bits_[slot / bits_per_word];
+    const std::uint32_t bit  = std::uint32_t{1} << (slot % bits_per_word);
+
+    history_[slot] = filtered;
+    edges_[slot]   = raw.time;
+
+    // Set or clear: the slot may still hold the flag of an older pulse.
+    word = raw.filled_in ? (word | bit) : (word & ~bit);
 }
 
 void clock_tracker::apply_pending_reset(sample_time when, std::int64_t sequence) noexcept
@@ -515,6 +565,8 @@ void clock_tracker::note_real_pulse(sample_time when) noexcept
 
 void clock_tracker::relabel(std::int64_t sequence_of_bar_zero) noexcept
 {
+    expects(sequence_of_bar_zero >= 0);  // edge() relies on a label offset that is never negative
+
     index_offset_ = sequence_of_bar_zero;
     ++resets_applied_;
 }
@@ -618,7 +670,12 @@ sample_time clock_tracker::history_at(std::int64_t sequence) const noexcept
 {
     expects(sequence >= oldest_sequence() && sequence <= latest_sequence_);
 
-    return history_[static_cast<std::size_t>(sequence) % history_.size()];
+    return history_[slot_of(sequence)];
+}
+
+std::size_t clock_tracker::slot_of(std::int64_t sequence) const noexcept
+{
+    return static_cast<std::size_t>(sequence) % history_.size();
 }
 
 std::int64_t clock_tracker::oldest_sequence() const noexcept

@@ -32,8 +32,8 @@ class engine {
 public:
     static constexpr std::size_t command_queue_capacity = 64;
 
-    /// Clock history kept for questions about the past: 16 bars of 4/4 at 24 PPQN (12 KB). The
-    /// gate clock needs only a sixth of it; MIDI clock needs all of it.
+    /// Clock history kept for questions about the past: 16 bars of 4/4 at 24 PPQN (24 KB and 192
+    /// bytes). The gate clock needs only a sixth of it; MIDI clock needs all of it.
     static constexpr std::size_t clock_history_pulses = std::size_t{16} * 4 * 24;
 
     explicit engine(const engine_config& config) noexcept;
@@ -69,9 +69,9 @@ private:
     samples                                     sample_clock_{0};
     engine_config                               config_;
 
-    std::array<sample_time, clock_history_pulses> clock_history_{};
-    clock_tracker                                 clock_tracker_;
-    clock_report                                  clock_report_;
+    clock_history<clock_history_pulses> clock_history_{};
+    clock_tracker                       clock_tracker_;  // declared after the history it uses
+    clock_report                        clock_report_;
 
     // What report_clock() has already said, so it never says it twice (see report_clock()).
     std::optional<sample_time> last_reported_pulse_;
