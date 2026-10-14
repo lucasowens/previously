@@ -42,12 +42,20 @@ target_link_libraries(${FIRMWARE_NAME} PRIVATE previously::engine)
 previously_apply_strict_options(${FIRMWARE_NAME})
 previously_apply_embedded_subset(${FIRMWARE_NAME})
 
-# T0: fail the build if the image outgrows the STM32H750's 128 KiB internal flash.
+# T0: fail the build if the image outgrows the STM32H750's 128 KiB internal flash, or the
+# variables in internal RAM outgrow 112 KiB: DTCM's 128 KiB less 16 KiB for the stack.
+#
+# The stack reserve is about 9 times the measured need. GCC's -fstack-usage report, before LTO,
+# summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
+# start-up. The 1.8 KB is main()'s frame plus the audio interrupt: the FPU's exception frame, the
+# DMA handler, libDaisy's callback, the engine's process() and report_clock(), and the tracker's
+# history search.
 add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
     COMMAND "${CMAKE_COMMAND}"
             -DSIZE_TOOL=${TOOLCHAIN_BIN_DIR}/arm-none-eabi-size
             -DELF=$<TARGET_FILE:${FIRMWARE_NAME}>
             -DFLASH_BYTES=131072
+            -DRAM_BYTES=114688
             -P "${previously_root}/cmake/check_firmware_size.cmake"
     VERBATIM
 )
