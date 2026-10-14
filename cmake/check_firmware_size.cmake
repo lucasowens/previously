@@ -8,6 +8,10 @@
 #
 # Inputs: SIZE_TOOL (arm-none-eabi-size), ELF, FLASH_BYTES, RAM_BYTES.
 
+# A script run with cmake -P inherits no policies from the project. Without its own, CMake 3.x
+# leaves CMP0057 unset and rejects IN_LIST below.
+cmake_minimum_required(VERSION 3.25)
+
 execute_process(
     COMMAND "${SIZE_TOOL}" --format=berkeley "${ELF}"
     OUTPUT_VARIABLE size_output
