@@ -59,9 +59,6 @@ constexpr std::int64_t max_index_distance = 1'099'511'627'776;
 /// The smallest allowed phase gain: below this the tracker would barely move.
 constexpr float min_phase_gain = 0.01F;
 
-/// Fill-in flags are packed one bit per pulse into the words of clock_history::fill_in_bits.
-constexpr std::size_t bits_per_word = std::numeric_limits<std::uint32_t>::digits;
-
 /// Multiplies a time by a gain, rounding to the nearest tick. Gains and errors are small, so
 /// float precision is ample here; the result goes back into exact integer time.
 [[nodiscard]] sample_time scale(sample_time value, float gain) noexcept
@@ -90,7 +87,7 @@ constexpr std::size_t bits_per_word = std::numeric_limits<std::uint32_t>::digits
 clock_tracker::clock_tracker(const clock_tracker_config& config,
                              std::span<sample_time>      filtered,
                              std::span<sample_time>      edges,
-                             std::span<std::uint32_t>    fill_in_bits) noexcept
+                             std::span<fill_in_word>     fill_in_bits) noexcept
     : history_{filtered},
       edges_{edges},
       fill_in_bits_{fill_in_bits},
@@ -313,11 +310,12 @@ std::optional<pulse_edge> clock_tracker::edge(std::int64_t index) const noexcept
         return std::nullopt;
     }
 
-    const std::size_t slot = slot_of(sequence);
+    const std::size_t  slot = slot_of(sequence);
+    const fill_in_word word = fill_in_bits_[slot / fill_in_bits_per_word];
 
     return pulse_edge{
         .time      = edges_[slot],
-        .filled_in = ((fill_in_bits_[slot / bits_per_word] >> (slot % bits_per_word)) & 1U) != 0U,
+        .filled_in = ((word >> (slot % fill_in_bits_per_word)) & 1U) != 0U,
     };
 }
 
@@ -528,9 +526,9 @@ void clock_tracker::record(sample_time filtered, pulse_edge raw) noexcept
 
 void clock_tracker::store(std::int64_t sequence, sample_time filtered, pulse_edge raw) noexcept
 {
-    const std::size_t   slot = slot_of(sequence);
-    std::uint32_t&      word = fill_in_bits_[slot / bits_per_word];
-    const std::uint32_t bit  = std::uint32_t{1} << (slot % bits_per_word);
+    const std::size_t  slot = slot_of(sequence);
+    fill_in_word&      word = fill_in_bits_[slot / fill_in_bits_per_word];
+    const fill_in_word bit  = fill_in_word{1} << (slot % fill_in_bits_per_word);
 
     history_[slot] = filtered;
     edges_[slot]   = raw.time;

@@ -118,6 +118,11 @@ struct pulse_edge {
     bool        filled_in{false};  // no edge arrived: the tracker filled the pulse in
 };
 
+/// Fill-in flags are packed one bit per pulse into words of this type.
+using fill_in_word = std::uint32_t;
+
+inline constexpr std::size_t fill_in_bits_per_word = std::numeric_limits<fill_in_word>::digits;
+
 /// The memory a clock_tracker remembers past pulses in. The owner provides it, so firmware can
 /// choose which memory it lives in, and it need not be initialized: every time is written before
 /// it is read, and the flags start clear by themselves. `Capacity` is how far back questions can
@@ -125,14 +130,15 @@ struct pulse_edge {
 /// a bit.
 template <std::size_t Capacity>
 struct clock_history {
-    static constexpr std::size_t bits_per_word = std::numeric_limits<std::uint32_t>::digits;
+    static constexpr std::size_t fill_in_words =
+        (Capacity + fill_in_bits_per_word - 1) / fill_in_bits_per_word;
 
     std::array<sample_time, Capacity> filtered;  // what the filter made of each pulse
     std::array<sample_time, Capacity> edges;     // each pulse as it arrived
 
     // One bit per pulse, set for a fill-in. Zeroed however the history is declared, because
     // setting one bit reads the rest of its word.
-    std::array<std::uint32_t, (Capacity + bits_per_word - 1) / bits_per_word> fill_in_bits{};
+    std::array<fill_in_word, fill_in_words> fill_in_bits{};
 };
 
 class clock_tracker {
@@ -223,7 +229,7 @@ private:
     clock_tracker(const clock_tracker_config& config,
                   std::span<sample_time>      filtered,
                   std::span<sample_time>      edges,
-                  std::span<std::uint32_t>    fill_in_bits) noexcept;
+                  std::span<fill_in_word>     fill_in_bits) noexcept;
 
     void lock_on_interval(sample_time when, sample_time interval) noexcept;
     void track(sample_time when) noexcept;
@@ -249,11 +255,11 @@ private:
 
     // Pulses are stored by sequence number (0, 1, 2, ... in arrival order). The public pulse
     // index is sequence - index_offset_, so a reset relabels the grid without moving any data.
-    std::span<sample_time>   history_;  // filtered times
-    std::span<sample_time>   edges_;
-    std::span<std::uint32_t> fill_in_bits_;
-    std::int64_t             latest_sequence_{-1};
-    std::int64_t             index_offset_{0};
+    std::span<sample_time>  history_;  // filtered times
+    std::span<sample_time>  edges_;
+    std::span<fill_in_word> fill_in_bits_;
+    std::int64_t            latest_sequence_{-1};
+    std::int64_t            index_offset_{0};
 
     // The filter.
     sample_time  period_;
