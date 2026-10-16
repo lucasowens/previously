@@ -191,7 +191,7 @@ measurements.** The rules now follow a single principle:
 | Provisional tempo | A tempo resting on one interval (fewer than 3 pulses in the fit) | An outlier re-acquires at once: the first interval is as likely to be wrong (a stray edge) |
 | Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. Judged against the current period even while an outlier is pending, so a hiccup just before a short stop doesn't change how the return is numbered. The known cost: a halving whose confirming pulse is more than ¼ late (intervals 2P then 2.6P, which genuinely don't agree) reads as a stop and keeps two filled-in pulses until the next reset. Pinned by a test. |
 | Clock returns | A real pulse while freewheeling | **Re-anchor phase only:** the pulse may land anywhere in its slot, so the gap measures phase, not tempo. The *next* real pulse measures the tempo from two real edges. |
-| Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. |
+| Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. The fill-ins had overwritten the oldest pulses, so the history is shorter until new pulses overwrite them in turn. If they outnumber the whole history (beyond 768.5× on 1,536 pulses), it is a stop and restart instead. |
 | Very long silence | More slots closed than the history holds | Skipped in O(1); at most `history_capacity()` fill-ins are written |
 | Reset input | Within **2 ms** of a pulse's *raw* edge, delivered before or after it | That pulse becomes index 0. A reset delivered late (after later pulses) labels the first pulse at or after its timestamp, from the history. While freewheeling, the next fill-in can take the label. |
 
@@ -204,9 +204,23 @@ knife edge.
 *before* calling `advance()` for the end of that block. `pulse(when)` also advances to `when`
 itself, so the result never depends on how often `advance()` runs. A test pins this down.
 
-**History storage belongs to the owner.** The history (16 KB for 2,048 pulses) is a `std::span`
-handed in by whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs
-256 entries at 4 PPQN but 1,536 at 24 PPQN.
+**History storage belongs to the owner.** The history is a `clock_history<Capacity>` provided by
+whoever owns the tracker, so the firmware decides which RAM it lives in. 16 bars needs 256 entries
+at 4 PPQN but 1,536 at 24 PPQN. The engine keeps 1,536: 24 KB and 192 bytes.
+
+**Two times per pulse.** Each entry holds the pulse's filtered time and its raw edge, plus one bit
+saying whether it was filled in:
+
+- **The filtered time** is what the grid runs on: predictions, clock out, `pulse_time()`. It is
+  built from earlier pulses only, which is all a prediction can have.
+- **The raw edge** is for retro capture. Asked where a bar line *was*, capture can also use the
+  pulses that came after it. DESIGN.md §3.4 measured the difference: after a phase shift or a
+  tempo change near a line, the filtered times are up to 120 samples off, and the edges 0.01.
+- **A fill-in** has no real edge: its edge is the slot it was filled in at, and the bit marks it,
+  so capture can leave fill-ins out of its jitter estimate.
+
+The three arrays live in one `clock_history`, so their sizes cannot disagree: a mismatch would not
+compile. The tracker sees them as spans.
 
 **Where hiccup immunity does not apply.** It needs a confirmed tempo: three pulses in the fit.
 Right after acquisition, the tempo rests on one interval, so any outlier re-acquires. After a
@@ -284,6 +298,50 @@ compound case, and an overflow. Each fix got a test, then each fix was removed t
 | Stop detection ignores the pending outlier | Caught | — (fix 3 was later reverted: the follow-up review showed it moved the inconsistency to the commoner case of a hiccup before a short stop, where the misnumbering grows with the hiccup; both cases are now pinned) |
 | Overflow guard (UBSan) | Caught | — |
 | "Same length" tolerance widened to a half | Caught | — |
+
+**Round 5** (edge times, PR #7). Before the round, reading `edge()` found a lower bound that no
+test could fail: an index more than 2⁴⁰ pulses old. Labels are a sequence minus an offset that is
+never negative, so the conversion cannot overflow downwards, and the oldest-sequence check refuses
+such an index anyway. The bound was removed, and `relabel()` now states the offset as a
+precondition.
+
+| Planted bug | First result | Action |
+|---|---|---|
+| Tracking stores the filtered time as the edge | Caught | — |
+| A stray first edge replaces only the filtered time | Caught | — |
+| Fill-ins not flagged | Caught | — |
+| A flag is set but never cleared | Caught | Only where a slot is reused: after a retirement, and where stops wrap the history |
+| The pulse returning from freewheel flagged as a fill-in | Caught | — |
+| The pulse re-recorded at a retirement flagged as a fill-in | Caught | — |
+| `edge()` ignores a pending reset | Caught | — |
+| `edge()` has no upper bound | Caught | Also by UBSan: an absurd index overflowed on its way to a sequence |
+| `edge()` has no lower bound | Caught | — |
+| Every flag in one word; the flag read from the wrong bit | Caught | — |
+| Flag words rounded down, not up | **Survived** | With 33 pulses the missing word fell in the struct's padding, so nothing read or wrote out of bounds. Now pinned at compile time: `static_assert`s on the word count, and on the engine's history size (24,768 bytes). |
+
+**Lesson, a new one:** a test cannot see a bug that writes where nothing else reads. When a
+property is arithmetic on sizes, prove it at compile time.
+
+The review then found its mirror image: a read of memory nothing had written. Setting one flag
+reads the rest of its word, so a history declared without `{}` read uninitialized words, which is
+undefined behaviour. No result changed, since every recorded slot writes its own bit before it is
+tested, and neither ASan nor UBSan reports such a read. The flags now start at zero however the
+history is declared, and a test builds one over memory full of ones to show it.
+
+The second review found a defect older than edge times, newly readable through `edge()`: a
+retirement on a wrapped history. The rewind moved the history's start back with the count, onto
+slots the retired fill-ins had overwritten, so the oldest pulses read as later ones: pulse 69 as
+pulse 102, after a 3× slowdown on 33 pulses. `pulse_at_or_before()` and `pulses_between()` then
+failed there too, because the history's first entry was no longer its earliest. Every earlier
+retirement test ran on a history that had not wrapped.
+
+The history now starts from the highest sequence ever stored, and a retirement whose slots are
+gone is not made. Six mutations of the fix are each caught: the start counted from the latest
+sequence again, the check removed, the check one slot looser or stricter, and the high-water mark
+lowered on a rewind or never set.
+
+**And a lesson from it:** attack both ends of a buffer. A wrapped ring's oldest entries are where
+an overwrite shows.
 
 ---
 

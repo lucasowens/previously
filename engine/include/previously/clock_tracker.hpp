@@ -50,6 +50,11 @@
 // Under a steady tempo ramp the tracker lags slightly; the gate preset keeps that well below one
 // sample (tested). See docs/learning/clock-tracking.md.
 //
+// The history keeps two times for each pulse. The filtered time serves the grid: predictions,
+// clock out and the queries below. The raw edge serves capture. A filtered time is built from
+// earlier pulses only, and capture estimates where a bar line was from the pulses on both sides
+// of it, which needs the edges themselves (DESIGN.md §3.4).
+//
 // Timing contract for callers: deliver pulses in time order, and deliver each audio block's
 // pulses BEFORE calling advance() for the end of that block. pulse(when) also advances to `when`
 // itself, so the result never depends on how often advance() runs.
@@ -59,8 +64,10 @@
 #include "previously/sample_time.hpp"
 #include "previously/units.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 
@@ -105,16 +112,49 @@ struct grid_point {
     std::int64_t index{0};
 };
 
+/// A recorded pulse as it arrived, before filtering.
+struct pulse_edge {
+    sample_time time;              // the raw edge; for a fill-in, the slot it was filled in at
+    bool        filled_in{false};  // no edge arrived: the tracker filled the pulse in
+};
+
+/// Fill-in flags are packed one bit per pulse into words of this type.
+using fill_in_word = std::uint32_t;
+
+inline constexpr std::size_t fill_in_bits_per_word = std::numeric_limits<fill_in_word>::digits;
+
+/// The memory a clock_tracker remembers past pulses in. The owner provides it, so firmware can
+/// choose which memory it lives in, and it need not be initialized: every time is written before
+/// it is read, and the flags start clear by themselves. `Capacity` is how far back questions can
+/// reach: 16 bars in 4/4 is 256 pulses at 4 PPQN, 1,536 at 24 PPQN. Each pulse costs 16 bytes and
+/// a bit.
+template <std::size_t Capacity>
+struct clock_history {
+    static constexpr std::size_t fill_in_words =
+        (Capacity + fill_in_bits_per_word - 1) / fill_in_bits_per_word;
+
+    std::array<sample_time, Capacity> filtered;  // what the filter made of each pulse
+    std::array<sample_time, Capacity> edges;     // each pulse as it arrived
+
+    // One bit per pulse, set for a fill-in. Zeroed however the history is declared, because
+    // setting one bit reads the rest of its word.
+    std::array<fill_in_word, fill_in_words> fill_in_bits{};
+};
+
 class clock_tracker {
 public:
     /// Pulses closer together than this are double triggers. It also bounds how many pulses can
     /// fall in any stretch of time: at most one per 4 ms.
     static constexpr seconds double_trigger_spacing{0.004F};
 
-    /// `history` holds the filtered times of past pulses. The caller owns it, so firmware can
-    /// choose which memory it lives in, and it need not be initialized. Its size is how far back
-    /// questions can reach: 16 bars in 4/4 is 256 pulses at 4 PPQN, 1,536 at 24 PPQN.
-    clock_tracker(const clock_tracker_config& config, std::span<sample_time> history) noexcept;
+    /// The tracker keeps its history in `history`, which must outlive it.
+    template <std::size_t Capacity>
+    clock_tracker(const clock_tracker_config& config, clock_history<Capacity>& history) noexcept
+        : clock_tracker{config, history.filtered, history.edges, history.fill_in_bits}
+    {
+        // Tempo needs two pulses, and every slot index is taken modulo the capacity.
+        static_assert(Capacity >= 2, "the history must hold at least two pulses");
+    }
 
     /// A clock edge happened at `when`. Pulses must arrive in time order (see the timing contract
     /// at the top of this file).
@@ -137,7 +177,9 @@ public:
 
     [[nodiscard]] std::int64_t pulses_per_bar() const noexcept;
 
-    /// How many past pulses can be looked up.
+    /// How many past pulses can be looked up, at most. Fewer for a while after a slowed clock's
+    /// fill-ins are retired: they had overwritten the oldest pulses, and the history is whole
+    /// again once new pulses overwrite them in turn.
     [[nodiscard]] std::size_t history_capacity() const noexcept;
 
     /// Time between pulses, once known.
@@ -155,6 +197,12 @@ public:
     /// pulse is older than the history, the tempo is not yet known, or the index is absurdly far
     /// from the present.
     [[nodiscard]] std::optional<sample_time> pulse_time(std::int64_t index) const noexcept;
+
+    /// The raw edge of recorded pulse `index`, and whether it was filled in. Capture estimates
+    /// bar lines from these (DESIGN.md §3.4). Unlike pulse_time(), nothing is extrapolated: empty
+    /// when the pulse is older than the history or not yet recorded. A freewheel slot is
+    /// recorded when it commits, half a period after its time.
+    [[nodiscard]] std::optional<pulse_edge> edge(std::int64_t index) const noexcept;
 
     /// Index of the last pulse at or before `when`.
     [[nodiscard]] std::optional<std::int64_t> pulse_at_or_before(sample_time when) const noexcept;
@@ -180,12 +228,19 @@ public:
     [[nodiscard]] std::uint32_t resets_applied() const noexcept;
 
 private:
+    clock_tracker(const clock_tracker_config& config,
+                  std::span<sample_time>      filtered,
+                  std::span<sample_time>      edges,
+                  std::span<fill_in_word>     fill_in_bits) noexcept;
+
     void lock_on_interval(sample_time when, sample_time interval) noexcept;
-    void track(sample_time error) noexcept;
+    void track(sample_time when) noexcept;
     void handle_outlier(sample_time when, sample_time interval) noexcept;
     void return_from_freewheel(sample_time when, sample_time previous_raw) noexcept;
     void fill_in_closed_slots(sample_time now) noexcept;
-    void record(sample_time when) noexcept;
+    void record(sample_time when) noexcept;  // a real pulse, recorded where it happened
+    void record(sample_time filtered, pulse_edge raw) noexcept;
+    void store(std::int64_t sequence, sample_time filtered, pulse_edge raw) noexcept;
     void apply_pending_reset(sample_time when, std::int64_t sequence) noexcept;
     void note_real_pulse(sample_time when) noexcept;
     void relabel(std::int64_t sequence_of_bar_zero) noexcept;
@@ -195,15 +250,19 @@ private:
     [[nodiscard]] sample_time  latest_time() const noexcept;
     [[nodiscard]] sample_time  predicted_time(std::int64_t sequence) const noexcept;
     [[nodiscard]] sample_time  history_at(std::int64_t sequence) const noexcept;
+    [[nodiscard]] std::size_t  slot_of(std::int64_t sequence) const noexcept;
     [[nodiscard]] std::int64_t oldest_sequence() const noexcept;
     [[nodiscard]] std::optional<std::int64_t>
     sequence_at_or_before(sample_time when) const noexcept;
 
     // Pulses are stored by sequence number (0, 1, 2, ... in arrival order). The public pulse
     // index is sequence - index_offset_, so a reset relabels the grid without moving any data.
-    std::span<sample_time> history_;
-    std::int64_t           latest_sequence_{-1};
-    std::int64_t           index_offset_{0};
+    std::span<sample_time>  history_;  // filtered times
+    std::span<sample_time>  edges_;
+    std::span<fill_in_word> fill_in_bits_;
+    std::int64_t            latest_sequence_{-1};
+    std::int64_t            highest_stored_{-1};  // above the latest after a retirement
+    std::int64_t            index_offset_{0};
 
     // The filter.
     sample_time  period_;

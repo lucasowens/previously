@@ -31,13 +31,15 @@ hook runs the format check and the host tests.
   - values just either side of every threshold
   - both orderings of events
   - extreme ratios, and missing calls
+  - both ends of a buffer: a wrapped history's oldest entries, not only its newest
   - **transients, not just end states**
 - **Mutation-check new logic.** Remove or invert each mechanism one at a time and confirm a test
   fails. Verify the mutation actually applied and built: `-Werror` turns unused variables into
-  build failures, and a failed build silently reruns the old binary. Four rounds so far, recorded
+  build failures, and a failed build silently reruns the old binary. Five rounds so far, recorded
   in `docs/learning/clock-tracking.md` §7. The recurring lesson: tests checking only end states
   miss bugs whose damage is a one-pulse transient (a predicted time, a label, a period during a
-  transition).
+  transition). Round 5 added one: a bug that writes where nothing reads (struct padding) needs a
+  `static_assert`, not a test.
 - **Measure before choosing.** Gains, thresholds and transition behaviour are chosen from
   measurements (scratch probes against the engine library), then pinned by tests with the
   numbers in comments.
@@ -65,7 +67,7 @@ hook runs the format check and the host tests.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#4)
+## Current state (after PRs #1–#7)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -75,9 +77,19 @@ hook runs the format check and the host tests.
     sudden slowdowns add pinned extras (`clock_events.hpp`, clock-tracking.md §8). Labels
     are as they will be once a pending reset applies.
   - Rack CLOCK, RESET and CLOCK OUT jacks and lights. Verified in VCV Rack 2 Pro by the user.
+  - Retro capture's design (DESIGN §3.4, v0.3, PR #6).
+  - Edge times (PR #7): the tracker's `clock_history` keeps each pulse's raw edge and a fill-in
+    bit beside its filtered time, read with `edge(index)`. The firmware build also enforces a
+    RAM budget (DESIGN §2.3).
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
+  - After a slowed clock's retirement the history is shorter until new pulses overwrite the
+    retired slots. Beyond 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
+    restart, and its fill-ins stay
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. If the firmware flash budget (73% now) trips, try `-Os` first and report the trade-off.
-- **Next:** retro capture (DESIGN §3.4, §5), host- and Rack-first.
+  asked. If the firmware flash budget (75% now) trips, try `-Os` first and report the trade-off.
+  The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what grew.
+- **Next:** retro capture, host- and Rack-first, in three more PRs: the paged tape, recorder, DC
+  blocker and `-ffp-contract=off` (DESIGN §2.3, §5.5, ADR 0005); capture and playback (§3.4,
+  §5); the Rack controls. PR #6's closing review lists the tests each one owes.

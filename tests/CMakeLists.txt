@@ -54,3 +54,11 @@ add_test(NAME render_rejects_oversized_block
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/render_limits
             -P ${CMAKE_CURRENT_SOURCE_DIR}/render_limits.cmake
 )
+
+# T0's firmware budgets, checked on every host without the ARM toolchain.
+add_test(NAME firmware_size_budgets
+    COMMAND ${CMAKE_COMMAND}
+            -DCHECK_SCRIPT=${PROJECT_SOURCE_DIR}/cmake/check_firmware_size.cmake
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/firmware_size
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/firmware_size_budgets.cmake
+)
