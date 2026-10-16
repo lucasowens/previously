@@ -1078,6 +1078,104 @@ TEST_CASE("fill-ins retired from a slowed clock give way to its real edges")
     }
 }
 
+TEST_CASE("a retirement shortens the history rather than expose what its fill-ins overwrote")
+{
+    // A 33-pulse history wraps during 100 steady pulses. Then the clock slows to a third: pulses
+    // at 102 and 105 periods, with two fill-ins before each. Before the second slow pulse, the
+    // history holds pulses 72 to 104. The retirement rewinds the count to 101, but the slots of
+    // 69 to 71 now hold the retired 102 to 104, so the history starts at 72 until new pulses
+    // overwrite the retired ones.
+    clock_history<33> history{};
+    clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+    std::vector<double> truth = steady_clock(0.0, gate_period, 100);
+    for (int i = 1; i <= 6; ++i) {
+        truth.push_back(truth[99] + (gate_period * 3.0 * i));
+    }
+
+    feed(tracker, std::span{truth}.first(102));
+    REQUIRE(tracker.latest_pulse() == 101);
+
+    for (std::int64_t i = 69; i <= 71; ++i) {
+        CAPTURE(i);
+        CHECK_FALSE(tracker.edge(i).has_value());
+        CHECK_FALSE(tracker.pulse_time(i).has_value());
+    }
+
+    // Every pulse from 72 on is the one it says it is.
+    for (std::int64_t i = 72; i <= 101; ++i) {
+        CAPTURE(i);
+
+        const auto index = static_cast<std::size_t>(i);
+
+        CHECK(known(tracker.edge(i)).time == at(truth[index]));
+        CHECK(known(tracker.pulse_time(i)) == at(truth[index]));
+    }
+
+    CHECK(tracker.pulse_at_or_before(at(truth[79])) == 79);
+    CHECK_FALSE(tracker.pulse_at_or_before(at(truth[71])).has_value());
+
+    std::array<grid_point, 8> found{};
+    REQUIRE(tracker.pulses_between(at(truth[70]), at(truth[75]), found) == 3);
+    CHECK(found[0].index == 72);
+    CHECK(found[2].index == 74);
+
+    // Three more slow pulses overwrite the retired slots, and the history is whole again: still
+    // starting at 72, now with all 33 pulses. The next one moves it on as usual.
+    feed(tracker, std::span{truth}.subspan(102, 3));
+    REQUIRE(tracker.latest_pulse() == 104);
+    CHECK(known(tracker.edge(72)).time == at(truth[72]));
+    CHECK(known(tracker.edge(104)).time == at(truth[104]));
+
+    feed(tracker, std::span{truth}.subspan(105));
+    CHECK_FALSE(tracker.edge(72).has_value());
+    CHECK(known(tracker.edge(73)).time == at(truth[73]));
+}
+
+TEST_CASE("a slowdown whose fill-ins overwrote the pulse before them reads as a stop")
+{
+    // A retirement re-records the two slow pulses just after the last steady one, so that slot
+    // must still be in the history. On a 33-pulse history, two gaps of 17 periods leave exactly
+    // the 33 pulses from it on: retired. Gaps of 17 and 18 periods leave one too many: the clock
+    // stopped and restarted, and its fill-ins stay.
+    const auto steady = steady_clock(0.0, gate_period, 100);
+
+    SUBCASE("gaps of 17 and 17 periods are retired")
+    {
+        clock_history<33> history{};
+        clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+        feed(tracker, steady);
+        tracker.pulse(at(gate_period * (99.0 + 17.0)));
+        tracker.pulse(at(gate_period * (99.0 + 34.0)));
+
+        CHECK(tracker.latest_pulse() == 101);
+        CHECK(std::abs(error_in_samples(known(tracker.pulse_period()), gate_period * 17.0)) < 0.01);
+
+        // Only the two slow pulses are left: the fill-ins overwrote everything before them.
+        CHECK_FALSE(tracker.edge(99).has_value());
+        CHECK(known(tracker.edge(100)).time == at(gate_period * (99.0 + 17.0)));
+        CHECK(known(tracker.edge(101)).time == at(gate_period * (99.0 + 34.0)));
+    }
+
+    SUBCASE("gaps of 17 and 18 periods are a stop and a restart")
+    {
+        clock_history<33> history{};
+        clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+        feed(tracker, steady);
+        tracker.pulse(at(gate_period * (99.0 + 17.0)));
+        tracker.pulse(at(gate_period * (99.0 + 35.0)));
+
+        CHECK(tracker.latest_pulse() == 99 + 35);
+        CHECK(tracker.state() == clock_state::locked);
+        CHECK(tracker.pulse_period() == at(gate_period));
+        CHECK(known(tracker.edge(133)).filled_in);
+        CHECK_FALSE(known(tracker.edge(134)).filled_in);
+        CHECK(known(tracker.edge(102)).filled_in);
+    }
+}
+
 TEST_CASE("a stray first edge is replaced among the edges too")
 {
     tracked_clock clock{clock_tracker_config::gate(rate_48k)};

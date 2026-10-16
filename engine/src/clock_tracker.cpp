@@ -449,11 +449,15 @@ void clock_tracker::return_from_freewheel(sample_time when, sample_time previous
 
     // Two consecutive long gaps of the same length: the clock slowed down, it did not stop.
     // Retire the fill-ins by rewinding to the real pulse before the previous one, then re-record
-    // both real pulses at the new tempo.
+    // both real pulses at the new tempo, in the slots just after it. Those slots must still be in
+    // the history. When the fill-ins of both gaps and the pulse between them number more than the
+    // history holds, they have overwritten those slots, and the clock reads as stopped and
+    // restarted instead.
     const bool clock_slowed =
         previous_raw_interval_ && same_length(raw_interval, *previous_raw_interval_);
+    const bool slots_kept = previous_raw_sequence_ + 1 >= oldest_sequence();
 
-    if (clock_slowed && previous_raw_sequence_ >= 0) {
+    if (clock_slowed && previous_raw_sequence_ >= 0 && slots_kept) {
         latest_sequence_ = previous_raw_sequence_;
         record(previous_raw);
         latest_raw_sequence_ = latest_sequence_;
@@ -535,6 +539,8 @@ void clock_tracker::store(std::int64_t sequence, sample_time filtered, pulse_edg
 
     // Set or clear: the slot may still hold the flag of an older pulse.
     word = raw.filled_in ? (word | bit) : (word & ~bit);
+
+    highest_stored_ = std::max(highest_stored_, sequence);
 }
 
 void clock_tracker::apply_pending_reset(sample_time when, std::int64_t sequence) noexcept
@@ -678,9 +684,11 @@ std::size_t clock_tracker::slot_of(std::int64_t sequence) const noexcept
 
 std::int64_t clock_tracker::oldest_sequence() const noexcept
 {
+    // The oldest pulse whose slot nothing later has overwritten. Counted from the highest sequence
+    // ever stored, not the latest: a retirement rewinds the count, but the fill-ins it retires
+    // have already overwritten the oldest slots.
     return std::max<std::int64_t>(0,
-                                  latest_sequence_ - static_cast<std::int64_t>(history_.size()) +
-                                      1);
+                                  highest_stored_ - static_cast<std::int64_t>(history_.size()) + 1);
 }
 
 std::optional<std::int64_t> clock_tracker::sequence_at_or_before(sample_time when) const noexcept

@@ -191,7 +191,7 @@ measurements.** The rules now follow a single principle:
 | Provisional tempo | A tempo resting on one interval (fewer than 3 pulses in the fit) | An outlier re-acquires at once: the first interval is as likely to be wrong (a stray edge) |
 | Clock stopped | No pulse for **2.5 periods** | **Freewheel:** fill in pulses at the last tempo. Each fill-in commits half a period after its slot, so a late real pulse still claims its slot. Judged against the current period even while an outlier is pending, so a hiccup just before a short stop doesn't change how the return is numbered. The known cost: a halving whose confirming pulse is more than ¼ late (intervals 2P then 2.6P, which genuinely don't agree) reads as a stop and keeps two filled-in pulses until the next reset. Pinned by a test. |
 | Clock returns | A real pulse while freewheeling | **Re-anchor phase only:** the pulse may land anywhere in its slot, so the gap measures phase, not tempo. The *next* real pulse measures the tempo from two real edges. |
-| Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. |
+| Clock slowed by 2.5× or more | Two consecutive long gaps of the same length (within ¼) | It slowed rather than stopped: **retire the fill-ins**, re-record both real pulses, re-acquire. The count matches the real pulses. The fill-ins had overwritten the oldest pulses, so the history is shorter until new pulses overwrite them in turn. If they outnumber the whole history (beyond 768.5× on 1,536 pulses), it is a stop and restart instead. |
 | Very long silence | More slots closed than the history holds | Skipped in O(1); at most `history_capacity()` fill-ins are written |
 | Reset input | Within **2 ms** of a pulse's *raw* edge, delivered before or after it | That pulse becomes index 0. A reset delivered late (after later pulses) labels the first pulse at or after its timestamp, from the history. While freewheeling, the next fill-in can take the label. |
 
@@ -327,6 +327,21 @@ reads the rest of its word, so a history declared without `{}` read uninitialize
 undefined behaviour. No result changed, since every recorded slot writes its own bit before it is
 tested, and neither ASan nor UBSan reports such a read. The flags now start at zero however the
 history is declared, and a test builds one over memory full of ones to show it.
+
+The second review found a defect older than edge times, newly readable through `edge()`: a
+retirement on a wrapped history. The rewind moved the history's start back with the count, onto
+slots the retired fill-ins had overwritten, so the oldest pulses read as later ones: pulse 69 as
+pulse 102, after a 3× slowdown on 33 pulses. `pulse_at_or_before()` and `pulses_between()` then
+failed there too, because the history's first entry was no longer its earliest. Every earlier
+retirement test ran on a history that had not wrapped.
+
+The history now starts from the highest sequence ever stored, and a retirement whose slots are
+gone is not made. Six mutations of the fix are each caught: the start counted from the latest
+sequence again, the check removed, the check one slot looser or stricter, and the high-water mark
+lowered on a rewind or never set.
+
+**And a lesson from it:** attack both ends of a buffer. A wrapped ring's oldest entries are where
+an overwrite shows.
 
 ---
 

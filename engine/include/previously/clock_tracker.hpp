@@ -177,7 +177,9 @@ public:
 
     [[nodiscard]] std::int64_t pulses_per_bar() const noexcept;
 
-    /// How many past pulses can be looked up.
+    /// How many past pulses can be looked up, at most. Fewer for a while after a slowed clock's
+    /// fill-ins are retired: they had overwritten the oldest pulses, and the history is whole
+    /// again once new pulses overwrite them in turn.
     [[nodiscard]] std::size_t history_capacity() const noexcept;
 
     /// Time between pulses, once known.
@@ -259,6 +261,7 @@ private:
     std::span<sample_time>  edges_;
     std::span<fill_in_word> fill_in_bits_;
     std::int64_t            latest_sequence_{-1};
+    std::int64_t            highest_stored_{-1};  // above the latest after a retirement
     std::int64_t            index_offset_{0};
 
     // The filter.

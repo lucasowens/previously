@@ -175,7 +175,7 @@ so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
 | With the clock wiring and hiccup handling (P1) | 74% (97,504 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
-| With the tracker's edge times (P1) | 75% (98,388 bytes) | |
+| With the tracker's edge times (P1) | 75% (98,468 bytes) | |
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
@@ -196,8 +196,8 @@ build fails if the flash budget is exceeded (T0). When it does:
 **The RAM budget (T0).** The build fails if the variables outgrow **112 KiB**: DTCM less 16 KiB
 for the stack. Within it, the move to the bootloader layout stays open.
 
-- **Today** they take 80,396 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (26,000 bytes, 24,768 of them the clock history).
+- **Today** they take 80,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (26,008 bytes, 24,768 of them the clock history).
 - **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
   LTO, summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
   start-up.
@@ -295,7 +295,12 @@ grid. Full explanation, measurements and the mutation-testing record:
     once.
   - 2.5 silent periods switch to freewheeling: pulses are filled in at the last tempo
   - a returning clock re-anchors the phase only; the next real pulse measures the tempo
-  - two equal long gaps mean a slowed clock: the fill-ins are retired
+  - two equal long gaps mean a slowed clock: the fill-ins are retired. They have overwritten the
+    oldest pulses, so the history is shorter until new pulses overwrite them in turn. When the
+    fill-ins of both gaps and the pulse between them outnumber the history, the slots a
+    retirement needs are gone, and the clock reads as stopped and restarted: the fill-ins stay.
+    On the engine's 1,536 pulses that happens beyond 768.5× (gaps of 96 s at 120 BPM and
+    4 PPQN), far slower than any tempo.
 - **Reset** (gate, or MIDI Start): the pulse within 2 ms of it, delivered in either order,
   becomes bar 0. A late-delivered reset is resolved from the history.
 - **Timing contract:** pulses are delivered in time order, each block's pulses before

@@ -15,9 +15,9 @@ if [ "$1" = "-A" ]; then cat "$elf/sysv.txt"; else cat "$elf/berkeley.txt"; fi
 ]=])
 file(CHMOD "${fake_size}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 
-# The firmware as of PR #7, as arm-none-eabi-size prints it (tabs shown as spaces). Flash is
-# text + data = 98,388 bytes. RAM is .data, .got, .got.plt and .bss = 80,396 bytes; .sram1_bss
-# lives in RAM_D2 and does not count.
+# A real image, this firmware early in PR #7, as arm-none-eabi-size printed it (tabs shown as
+# spaces). Flash is text + data = 98,388 bytes. RAM is .data, .got, .got.plt and .bss = 80,396
+# bytes; .sram1_bss lives in RAM_D2 and does not count.
 set(berkeley [=[
    text    data     bss     dec     hex filename
   95084    3304   94744  193132   2f26c previously.elf

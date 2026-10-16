@@ -31,6 +31,7 @@ hook runs the format check and the host tests.
   - values just either side of every threshold
   - both orderings of events
   - extreme ratios, and missing calls
+  - both ends of a buffer: a wrapped history's oldest entries, not only its newest
   - **transients, not just end states**
 - **Mutation-check new logic.** Remove or invert each mechanism one at a time and confirm a test
   fails. Verify the mutation actually applied and built: `-Werror` turns unused variables into
@@ -83,6 +84,9 @@ hook runs the format check and the host tests.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
+  - After a slowed clock's retirement the history is shorter until new pulses overwrite the
+    retired slots. Beyond 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
+    restart, and its fill-ins stay
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. If the firmware flash budget (75% now) trips, try `-Os` first and report the trade-off.
   The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what grew.
