@@ -85,7 +85,7 @@ hook runs the format check and the host tests.
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
   - After a slowed clock's retirement the history is shorter until new pulses overwrite the
-    retired slots. Beyond 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
+    retired slots. From 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
     restart, and its fill-ins stay
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. If the firmware flash budget (75% now) trips, try `-Os` first and report the trade-off.

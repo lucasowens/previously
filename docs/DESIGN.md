@@ -299,7 +299,7 @@ grid. Full explanation, measurements and the mutation-testing record:
     oldest pulses, so the history is shorter until new pulses overwrite them in turn. When the
     fill-ins of both gaps and the pulse between them outnumber the history, the slots a
     retirement needs are gone, and the clock reads as stopped and restarted: the fill-ins stay.
-    On the engine's 1,536 pulses that happens beyond 768.5× (gaps of 96 s at 120 BPM and
+    On the engine's 1,536 pulses that happens from 768.5× (gaps of 96 s at 120 BPM and
     4 PPQN), far slower than any tempo.
 - **Reset** (gate, or MIDI Start): the pulse within 2 ms of it, delivered in either order,
   becomes bar 0. A late-delivered reset is resolved from the history.
