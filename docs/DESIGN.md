@@ -179,6 +179,10 @@ alignment padding included.
 | With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 
+The figures are from a local build. The image embeds source paths (the engine's contract
+locations, and libstdc++'s header names), so it grows with the length of the repository's and the
+toolchain's paths: CI builds the same commit 340 bytes larger.
+
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
 
