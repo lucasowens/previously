@@ -169,13 +169,15 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
 so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48 kHz). Positions are
 `int64_t` sample counts, and fractional positions are fixed-point (Q32.32). §3.6 covers this.
 
-**Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it:
+**Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it.
+T0 counts it as the linker does: from the start of flash to the end of the last load image,
+alignment padding included.
 
 | Stage | Flash used | Mostly |
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
-| With the clock wiring and hiccup handling (P1) | 74% (97,504 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
-| With the tracker's edge times (P1) | 75% (98,468 bytes) | |
+| With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
+| With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:

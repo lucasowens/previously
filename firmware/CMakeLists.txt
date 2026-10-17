@@ -52,7 +52,7 @@ previously_apply_embedded_subset(${FIRMWARE_NAME})
 # history search.
 add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
     COMMAND "${CMAKE_COMMAND}"
-            -DSIZE_TOOL=${TOOLCHAIN_BIN_DIR}/arm-none-eabi-size
+            -DOBJDUMP_TOOL=${TOOLCHAIN_BIN_DIR}/arm-none-eabi-objdump
             -DELF=$<TARGET_FILE:${FIRMWARE_NAME}>
             -DFLASH_BYTES=131072
             -DRAM_BYTES=114688
