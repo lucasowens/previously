@@ -40,8 +40,11 @@ hook runs the format check and the host tests.
   checking only end states miss bugs whose damage is a one-pulse transient (a predicted time, a
   label, a period during a transition). Round 5 added one: a bug that writes where nothing reads
   (struct padding) needs a `static_assert`, not a test. Round 6 added two:
-  - A contract that aborts ends the run, which hides every later test. Rerun such mutations on
-    the `release` preset, where contracts compile out and only CHECKs can catch them.
+  - A contract that aborts ends the run, which hides every later test. The tape's tests audit
+    their pools (`page_audit` in `tests/tape_fixtures.hpp`), so a page left held or a failed
+    REQUIRE fails that one test instead. A leak inside the engine's own pool still aborts: rerun
+    those mutations filtered to the recorder's tests, or on the `release` preset, where contracts
+    compile out.
   - Read the whole test output, not its tail, to know which tests caught a mutation.
 - **Measure before choosing.** Gains, thresholds and transition behaviour are chosen from
   measurements (scratch probes against the engine library), then pinned by tests with the
@@ -96,7 +99,7 @@ hook runs the format check and the host tests.
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
   grew.
-- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 81% now,
+- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 83% now,
   57% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
 - **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists

@@ -199,7 +199,7 @@ build links with, so the budget follows the layout.
 | P0 passthrough | 61% | libDaisy and newlib |
 | With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code, unoptimized (below) |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
-| With the tape, recorder and DC blocker (P1) | 81% (107,344 bytes) | 8,868 bytes more unoptimized; 1,384 at `-O3` with LTO |
+| With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -210,7 +210,7 @@ libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options
 only targets defined after it in the firmware's directory. The engine is added before it, and the
 toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
 - **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
-  scratch build takes 73,608 bytes (56%) before the tape and 74,992 bytes (57%) with it.
+  scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it.
 - **Speed.** The engine's speed on the device would not be representative until it is fixed.
 - **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
 - **Order of remedies.** Fixing this comes before `-Os` in the steps below.
@@ -236,7 +236,7 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 81,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+- **Today** they take 81,420 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (26,816 bytes: 24,768 of them the clock history, and 808 the pool's and the
   recorder's bookkeeping).
 - **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
@@ -967,6 +967,10 @@ equal-power when they are not, or a blend.
   - Its state snaps to exactly zero below 2⁻⁵⁰ (−301 dBFS), and its input is flushed the same
     way. Fed silence after full scale, a 5 Hz one-pole goes subnormal after 2.78 s and stays
     there; with the snap it never does (ADR 0005).
+  - A NaN or an infinity is flushed the same way, in the input and in the state. Unflushed, one
+    stays in the state for ever, and every frame recorded after it is NaN. A Rack module
+    upstream can send one, and finite input can overflow into one: the largest float minus its
+    negative is infinite.
 
 ### 5.6 How it is verified
 
