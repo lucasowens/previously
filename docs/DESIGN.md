@@ -202,7 +202,8 @@ build fails if the flash budget is exceeded (T0). When it does:
 
 **The RAM budget (T0).** The build fails if the variables outgrow **112 KiB**: DTCM less 16 KiB
 for the stack. Within it, the move to the bootloader layout stays open. They are counted like
-flash: from the first variable to the end of the furthest, alignment padding included.
+flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
+padding included, plus `.dtcmram_bss`.
 
 - **Today** they take 80,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (26,008 bytes, 24,768 of them the clock history).

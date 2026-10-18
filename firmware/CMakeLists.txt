@@ -46,8 +46,9 @@ previously_apply_embedded_subset(${FIRMWARE_NAME})
 #
 # Flash: the FLASH region of the linker script this build links with (DaisyProject sets
 # LINKER_SCRIPT), and all of it the budget. The check reads the region's origin and length from the
-# script, so a change of layout needs no numbers changed here.
-
+# script, so a change of layout changes only the region's name: under the bootloader layout the
+# image loads into SRAM (STM32H750IB_sram.lds).
+#
 # RAM: the variables may take 112 KiB, DTCM's 128 KiB less 16 KiB for the stack. The reserve is
 # about 9 times the measured need. GCC's -fstack-usage report, before LTO, summed along the
 # deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at start-up. The 1.8 KB is

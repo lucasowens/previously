@@ -5,8 +5,9 @@
 #   RAM    the variables in internal RAM: .data and .bss. Today they live in AXI SRAM, and the
 #          stack has DTCM to itself. Under the QSPI bootloader layout (DESIGN.md §2.3) they move
 #          into DTCM and share its 128 KiB with the stack, so the budget is DTCM less a stack
-#          reserve. Within it, that move stays open. Counted the same way: from the first
-#          variable to the end of the furthest, alignment padding included.
+#          reserve. Within it, that move stays open. Counted the same way: .data, .got, .got.plt
+#          and .bss from the first to the end of the furthest, alignment padding included, plus
+#          .dtcmram_bss.
 #
 # Both come from one section table, `objdump -h`, which gives each section's size, addresses and
 # flags. The flash region comes from the linker script the build links with.
@@ -40,7 +41,10 @@ if(NOT DEFINED FLASH_BYTES)
 endif()
 
 # The variables, by where they live today. The linker adds .got and .got.plt after .data;
-# libDaisy's .dtcmram_bss is for variables placed in DTCM explicitly.
+# libDaisy's .dtcmram_bss is for variables placed in DTCM explicitly. Each group is a span of its
+# own, so the gap between them is not counted. Today that gap is between regions. Under the
+# bootloader layout .dtcmram_bss follows .bss in DTCM (STM32H750IB_sram.lds), and since .bss ends
+# 4-aligned, the uncounted padding is at most .dtcmram_bss's alignment less 4 bytes.
 set(sram_sections .data .got .got.plt .bss)
 set(dtcm_sections .dtcmram_bss)
 
