@@ -35,11 +35,14 @@ hook runs the format check and the host tests.
   - **transients, not just end states**
 - **Mutation-check new logic.** Remove or invert each mechanism one at a time and confirm a test
   fails. Verify the mutation actually applied and built: `-Werror` turns unused variables into
-  build failures, and a failed build silently reruns the old binary. Five rounds so far, recorded
-  in `docs/learning/clock-tracking.md` §7. The recurring lesson: tests checking only end states
-  miss bugs whose damage is a one-pulse transient (a predicted time, a label, a period during a
-  transition). Round 5 added one: a bug that writes where nothing reads (struct padding) needs a
-  `static_assert`, not a test.
+  build failures, and a failed build silently reruns the old binary. Six rounds so far: five in
+  `docs/learning/clock-tracking.md` §7, and the tape's in PR #10. The recurring lesson: tests
+  checking only end states miss bugs whose damage is a one-pulse transient (a predicted time, a
+  label, a period during a transition). Round 5 added one: a bug that writes where nothing reads
+  (struct padding) needs a `static_assert`, not a test. Round 6 added two:
+  - A contract that aborts ends the run, which hides every later test. Rerun such mutations on
+    the `release` preset, where contracts compile out and only CHECKs can catch them.
+  - Read the whole test output, not its tail, to know which tests caught a mutation.
 - **Measure before choosing.** Gains, thresholds and transition behaviour are chosen from
   measurements (scratch probes against the engine library), then pinned by tests with the
   numbers in comments.
@@ -67,7 +70,7 @@ hook runs the format check and the host tests.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#7)
+## Current state (after PRs #1–#10)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -80,7 +83,10 @@ hook runs the format check and the host tests.
   - Retro capture's design (DESIGN §3.4, v0.3, PR #6).
   - Edge times (PR #7): the tracker's `clock_history` keeps each pulse's raw edge and a fill-in
     bit beside its filtered time, read with `edge(index)`. The firmware build also enforces a
-    RAM budget (DESIGN §2.3).
+    RAM budget (DESIGN §2.3). PR #9 counts flash and RAM as the linker does.
+  - The paged tape (PR #10, host only): `page_pool`, the `recorder` with its 46-page history,
+    the DC blocker, the audio floor (2^-50) and `-ffp-contract=off` (ADR 0005, CODING_STANDARD
+    §3.13). The engine takes an optional tape span; Rack and the firmware pass none yet.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -88,8 +94,12 @@ hook runs the format check and the host tests.
     retired slots. From 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
     restart, and its fill-ins stay
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. If the firmware flash budget (75% now) trips, try `-Os` first and report the trade-off.
-  The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what grew.
-- **Next:** retro capture, host- and Rack-first, in three more PRs: the paged tape, recorder, DC
-  blocker and `-ffp-contract=off` (DESIGN §2.3, §5.5, ADR 0005); capture and playback (§3.4,
-  §5); the Rack controls. PR #6's closing review lists the tests each one owes.
+  asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
+  grew.
+- **The engine is built at `-O0` in the firmware** (DESIGN §2.3): flash is 81% now, 57% with
+  the engine optimized. If the flash budget trips, fix that first, then try `-Os` and report the
+  trade-off.
+- **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
+  the tests each owes; the crossfade-bits test and the floor test through the seam correlation
+  moved to capture and playback. Before the Rack controls, decide how Rack gets its tape
+  (DESIGN §15, question 10).
