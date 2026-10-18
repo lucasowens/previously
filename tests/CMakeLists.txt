@@ -7,6 +7,7 @@ add_executable(previously_tests
     test_main.cpp
     realtime_guard.cpp
     flush_to_zero_mode.cpp
+    tape_fixtures.cpp
     test_units.cpp
     test_sample_time.cpp
     test_clock_tracker.cpp

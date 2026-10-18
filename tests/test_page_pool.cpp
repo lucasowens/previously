@@ -4,11 +4,11 @@
 #include "previously/page_pool.hpp"
 
 #include "known.hpp"
+#include "tape_fixtures.hpp"
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -18,8 +18,11 @@ namespace {
 
 using page_id = page_pool::page_id;
 using test::known;
+using test::page_audit;
+using test::same_bits;
+using test::small_pool;
 
-constexpr samples small_page{16};
+constexpr samples small_page = small_pool::page_frames;
 
 // The page size: the smallest power of two with P × 48,000 ≥ 2^15 × rate (DESIGN.md §2.3).
 static_assert(page_frames_for(sample_rate{44'100U}) == samples{32'768});
@@ -45,137 +48,124 @@ static_assert(page_frames_for(sample_rate{0xFFFF'FFFFU}) == samples{4'294'967'29
 
 static_assert(sizeof(stereo_frame) == 2 * sizeof(float));
 
-/// Memory for a number of small pages, plus any extra frames.
-std::vector<stereo_frame> memory_for(std::size_t pages, std::size_t extra_frames = 0)
-{
-    return std::vector<stereo_frame>((pages * static_cast<std::size_t>(small_page.value())) +
-                                     extra_frames);
-}
-
 TEST_CASE("a pool is made of whole pages, at most max_pages of them")
 {
     SUBCASE("frames after the last whole page are not a page")
     {
-        std::vector<stereo_frame> memory = memory_for(3, 15);
-        const page_pool           pool{memory, small_page};
+        const small_pool pages{3, 15};
 
-        CHECK(pool.page_count() == 3U);
-        CHECK(pool.free_count() == 3U);
-        CHECK(pool.page_frames() == small_page);
+        CHECK(pages.pool.page_count() == 3U);
+        CHECK(pages.pool.free_count() == 3U);
+        CHECK(pages.pool.page_frames() == small_page);
     }
 
     SUBCASE("memory beyond max_pages is not used")
     {
-        std::vector<stereo_frame> memory = memory_for(page_pool::max_pages + 1);
-        page_pool                 pool{memory, small_page};
+        small_pool pages{page_pool::max_pages + 1};
 
-        CHECK(pool.page_count() == page_pool::max_pages);
+        CHECK(pages.pool.page_count() == page_pool::max_pages);
 
         std::vector<page_id> taken;
 
-        while (const auto page = pool.acquire()) {
+        while (const auto page = pages.pool.acquire()) {
             taken.push_back(*page);
         }
 
         // The last page ends where max_pages pages end, one page short of the memory's end.
         CHECK(taken.size() == page_pool::max_pages);
-        CHECK(pool.frames(taken.back()).data() == &memory[(page_pool::max_pages - 1) * 16]);
+        CHECK(pages.pool.frames(taken.back()).data() ==
+              &pages.memory[(page_pool::max_pages - 1) * 16]);
 
         for (const page_id page : taken) {
-            pool.release(page);
+            pages.pool.release(page);
         }
     }
 
     SUBCASE("no memory, no pages")
     {
-        page_pool pool{{}, small_page};
+        small_pool pages{0};
 
-        CHECK(pool.page_count() == 0U);
-        CHECK_FALSE(pool.acquire().has_value());
+        CHECK(pages.pool.page_count() == 0U);
+        CHECK_FALSE(pages.pool.acquire().has_value());
     }
 }
 
 TEST_CASE("pages are handed out once each, in order, until none is free")
 {
-    std::vector<stereo_frame> memory = memory_for(4);
-    page_pool                 pool{memory, small_page};
+    small_pool pages{4};
 
     for (page_id expected = 0; expected < 4; ++expected) {
-        const page_id page = known(pool.acquire());
+        const page_id page = known(pages.pool.acquire());
 
         CHECK(page == expected);
-        CHECK(pool.holders(page) == 1U);
-        CHECK(pool.free_count() == 3U - expected);
+        CHECK(pages.pool.holders(page) == 1U);
+        CHECK(pages.pool.free_count() == 3U - expected);
     }
 
-    CHECK_FALSE(pool.acquire().has_value());
+    CHECK_FALSE(pages.pool.acquire().has_value());
 
     for (page_id page = 0; page < 4; ++page) {
-        pool.release(page);
+        pages.pool.release(page);
     }
 
-    CHECK(pool.free_count() == 4U);
+    CHECK(pages.pool.free_count() == 4U);
 }
 
 TEST_CASE("a page goes back only when its last holder lets go")
 {
-    std::vector<stereo_frame> memory = memory_for(2);
-    page_pool                 pool{memory, small_page};
+    small_pool pages{2};
 
-    const page_id page = known(pool.acquire());
+    const page_id page = known(pages.pool.acquire());
 
-    pool.retain(page);
-    CHECK(pool.holders(page) == 2U);
+    pages.pool.retain(page);
+    CHECK(pages.pool.holders(page) == 2U);
 
-    pool.release(page);
-    CHECK(pool.holders(page) == 1U);
-    CHECK(pool.free_count() == 1U);
+    pages.pool.release(page);
+    CHECK(pages.pool.holders(page) == 1U);
+    CHECK(pages.pool.free_count() == 1U);
 
     // Still held, so it is not handed out again.
-    const page_id other = known(pool.acquire());
+    const page_id other = known(pages.pool.acquire());
     CHECK(other != page);
-    CHECK_FALSE(pool.acquire().has_value());
+    CHECK_FALSE(pages.pool.acquire().has_value());
 
-    pool.release(page);
-    CHECK(pool.holders(page) == 0U);
-    CHECK(pool.free_count() == 1U);
+    pages.pool.release(page);
+    CHECK(pages.pool.holders(page) == 0U);
+    CHECK(pages.pool.free_count() == 1U);
 
-    pool.release(other);
+    pages.pool.release(other);
 }
 
 TEST_CASE("the page given back last is the next one taken")
 {
-    std::vector<stereo_frame> memory = memory_for(3);
-    page_pool                 pool{memory, small_page};
+    small_pool pages{3};
 
-    const page_id first  = known(pool.acquire());
-    const page_id second = known(pool.acquire());
+    const page_id first  = known(pages.pool.acquire());
+    const page_id second = known(pages.pool.acquire());
 
-    pool.release(first);
+    pages.pool.release(first);
 
-    const page_id again = known(pool.acquire());
+    const page_id again = known(pages.pool.acquire());
     CHECK(again == first);
 
-    pool.release(again);
-    pool.release(second);
+    pages.pool.release(again);
+    pages.pool.release(second);
 }
 
 TEST_CASE("pages lie side by side in the memory, without overlapping")
 {
-    std::vector<stereo_frame> memory = memory_for(3, 5);
-    page_pool                 pool{memory, small_page};
+    small_pool           pages{3, 5};
+    std::vector<page_id> taken;
 
-    std::vector<page_id> pages;
-
-    while (const auto page = pool.acquire()) {
-        pages.push_back(*page);
+    while (const auto page = pages.pool.acquire()) {
+        taken.push_back(*page);
     }
 
-    REQUIRE(pages.size() == 3U);
+    REQUIRE(taken.size() == 3U);
 
     // Every frame of every page gets its own value, written through the pool.
-    for (const page_id page : pages) {
-        const auto frames = pool.frames(page);
+    for (const page_id page : taken) {
+        const auto frames = pages.pool.frames(page);
 
         REQUIRE(frames.size() == 16U);
 
@@ -189,18 +179,18 @@ TEST_CASE("pages lie side by side in the memory, without overlapping")
 
     // Read back from the memory: page p is frames 16p to 16p + 15, both ends included, and the
     // five frames after the last page are untouched.
-    for (std::size_t i = 0; i < memory.size(); ++i) {
+    for (std::size_t i = 0; i < pages.memory.size(); ++i) {
         const std::size_t page   = i / 16;
         const std::size_t offset = i % 16;
         const float       left   = page < 3 ? static_cast<float>((page * 100) + offset) : 0.0F;
 
         CAPTURE(i);
-        CHECK(memory[i].left == left);
-        CHECK(memory[i].right == -left);
+        CHECK(pages.memory[i].left == left);
+        CHECK(pages.memory[i].right == -left);
     }
 
-    for (const page_id page : pages) {
-        pool.release(page);
+    for (const page_id page : taken) {
+        pages.pool.release(page);
     }
 }
 
@@ -211,7 +201,8 @@ TEST_CASE("the pool never reads or writes its memory")
     std::vector<stereo_frame> memory(std::size_t{4} * 16, sentinel);
 
     {
-        page_pool pool{memory, small_page};
+        page_pool        pool{memory, small_page};
+        const page_audit audit{pool};
 
         const page_id first  = known(pool.acquire());
         const page_id second = known(pool.acquire());
@@ -223,7 +214,7 @@ TEST_CASE("the pool never reads or writes its memory")
     }
 
     CHECK(std::ranges::all_of(memory, [&](const stereo_frame& frame) {
-        return std::bit_cast<std::uint64_t>(frame) == std::bit_cast<std::uint64_t>(sentinel);
+        return same_bits(frame, sentinel);
     }));
 }
 
