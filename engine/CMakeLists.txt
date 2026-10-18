@@ -4,6 +4,8 @@ add_library(previously_engine STATIC
     src/clock_tracker.cpp
     src/dc_blocker.cpp
     src/engine.cpp
+    src/page_pool.cpp
+    src/recorder.cpp
 )
 
 add_library(previously::engine ALIAS previously_engine)

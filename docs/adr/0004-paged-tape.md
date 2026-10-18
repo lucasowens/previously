@@ -19,8 +19,8 @@ Reviewing the retro-capture design before any code was written found two problem
 ## Decision
 
 - Loop memory is one pool of **pages**. A page is the smallest power-of-two number of stereo
-  frames that lasts at least 0.6827 s: 2¹⁵ frames (256 KiB) at 44.1 and 48 kHz, and more at
-  higher rates. Page counts then do not depend on the sample rate.
+  frames that lasts at least as long as 2¹⁵ frames at 48 kHz (0.68267 s): 2¹⁵ frames (256 KiB)
+  at 44.1 and 48 kHz, and more at higher rates. Page counts then do not depend on the sample rate.
 - The **recorder** writes without pause, taking a free page whenever the current one fills. The
   newest pages are the history.
 - A **loop** holds the ids of the pages its window touches, with a reference count on each. A page
@@ -39,3 +39,9 @@ Reviewing the retro-capture design before any code was written found two problem
   search) need a lookup each.
 - A position inside a page is a shift and a mask.
 - Overdub and undo (P2) write into fresh pages instead of a spare buffer.
+
+## Correction
+
+The rule first read "lasts at least 0.6827 s". 2¹⁵ frames at 48 kHz last 0.68267 s, which falls
+short of that, so the rule as written gave 2¹⁶ frames at 48, 96 and 192 kHz: twice the page meant.
+It now names the duration exactly, and the code computes it in integers (DESIGN.md §2.3).
