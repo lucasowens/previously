@@ -212,8 +212,10 @@ The engine computes the same bits on every target (ADR 0005):
   (`previously_apply_float_rules`). Where a fused multiply-add is wanted, write `std::fma`.
 - **No libm transcendental functions** on a rendered path, including coefficients computed at
   construction. Use +, −, × and ÷, `std::sqrt`, or a `constexpr` table.
-- **Nothing produces or consumes a subnormal.** Apply `flush_below_floor()` (`audio_floor.hpp`)
-  where audio enters an arithmetic path, between processing stages, and to recursive state.
+- **Nothing produces or consumes a subnormal, a NaN or an infinity.** Apply `flush_non_audio()`
+  (`audio_floor.hpp`) where audio enters an arithmetic path, between processing stages, and to
+  recursive state. One non-finite value in recursive state stays there for ever, and Rack can
+  send one; finite input can overflow into one too.
 - **Rendered arithmetic lives in the engine's `.cpp` files.**
   - The Rack plugin compiles its own files with Rack's flags, which include
     `-funsafe-math-optimizations`.

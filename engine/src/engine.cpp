@@ -9,16 +9,39 @@
 #include <cstdint>
 
 namespace previously {
+namespace {
 
-engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexcept
-    : config_{config},
-      clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
-      pool_{tape, page_frames_for(config.rate)},
-      recorder_{pool_, config.rate, history_pages}
+// The settings and the tape are checked before anything is built from them, so a bad one is
+// reported here rather than by whichever member meets it first.
+
+[[nodiscard]] engine_config checked_config(const engine_config& config) noexcept
 {
     expects(config.rate.hz() > 0U);
     expects(config.max_block_frames > 0U);
-    expects(config.max_block_frames <= max_block_frames(config.rate));
+    expects(config.max_block_frames <= engine::max_block_frames(config.rate));
+
+    return config;
+}
+
+[[nodiscard]] std::span<stereo_frame> checked_tape(std::span<stereo_frame> tape,
+                                                   sample_rate             rate) noexcept
+{
+    const auto page_frames = static_cast<std::uint64_t>(page_frames_for(rate).value());
+    const auto whole_pages = static_cast<std::uint64_t>(tape.size()) / page_frames;
+
+    expects(tape.empty() || whole_pages >= engine::history_pages);
+
+    return tape;
+}
+
+}  // namespace
+
+engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexcept
+    : config_{checked_config(config)},
+      clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
+      pool_{checked_tape(tape, config.rate), page_frames_for(config.rate)},
+      recorder_{pool_, config.rate, history_pages}
+{
 }
 
 std::size_t engine::max_block_frames(sample_rate rate) noexcept

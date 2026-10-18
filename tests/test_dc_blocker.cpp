@@ -173,12 +173,12 @@ TEST_CASE("a minute of silence after full scale leaves no subnormal, and settles
 
 TEST_CASE("the audio floor keeps 2^-50 and flushes the next float below it")
 {
-    static_assert(flush_below_floor(audio_floor) == audio_floor);
-    static_assert(flush_below_floor(-audio_floor) == -audio_floor);
-    static_assert(flush_below_floor(next_towards_zero(audio_floor)) == 0.0F);
-    static_assert(flush_below_floor(-next_towards_zero(audio_floor)) == 0.0F);
-    static_assert(flush_below_floor(std::numeric_limits<float>::denorm_min()) == 0.0F);
-    static_assert(flush_below_floor(1.0F) == 1.0F);
+    static_assert(flush_non_audio(audio_floor) == audio_floor);
+    static_assert(flush_non_audio(-audio_floor) == -audio_floor);
+    static_assert(flush_non_audio(next_towards_zero(audio_floor)) == 0.0F);
+    static_assert(flush_non_audio(-next_towards_zero(audio_floor)) == 0.0F);
+    static_assert(flush_non_audio(std::numeric_limits<float>::denorm_min()) == 0.0F);
+    static_assert(flush_non_audio(1.0F) == 1.0F);
 
     SUBCASE("an input below the floor is silence")
     {
@@ -197,6 +197,69 @@ TEST_CASE("the audio floor keeps 2^-50 and flushes the next float below it")
 
         CHECK(blocker.process(audio_floor) == audio_floor);
         CHECK(blocker.process(0.0F) == 0.0F);
+    }
+}
+
+TEST_CASE("a value that is not finite is silence, and leaves nothing behind")
+{
+    constexpr float nan     = std::numeric_limits<float>::quiet_NaN();
+    constexpr float inf     = std::numeric_limits<float>::infinity();
+    constexpr float largest = std::numeric_limits<float>::max();
+
+    static_assert(flush_non_audio(nan) == 0.0F);
+    static_assert(flush_non_audio(inf) == 0.0F);
+    static_assert(flush_non_audio(-inf) == 0.0F);
+    static_assert(flush_non_audio(largest) == largest);
+    static_assert(flush_non_audio(-largest) == -largest);
+
+    SUBCASE("in the input")
+    {
+        // A Rack module upstream can send one. Unflushed, a NaN stays in the state for ever, and
+        // an infinity becomes a NaN at the next sample (inf - inf). Either way the blocker gives
+        // exactly what it gives for a zero in its place.
+        for (const float bad : {nan, inf, -inf}) {
+            CAPTURE(bad);
+
+            dc_blocker given_bad{rate_48k};
+            dc_blocker given_zero{rate_48k};
+
+            std::size_t differences = 0;
+
+            const auto both = [&](float input, float in_place_of_it) {
+                const float output = given_bad.process(input);
+                const float wanted = given_zero.process(in_place_of_it);
+
+                differences +=
+                    std::bit_cast<std::uint32_t>(output) == std::bit_cast<std::uint32_t>(wanted)
+                        ? 0U
+                        : 1U;
+            };
+
+            for (std::size_t i = 0; i < 100; ++i) {
+                both(0.5F, 0.5F);
+            }
+
+            both(bad, 0.0F);
+
+            for (std::size_t i = 0; i < 48'000; ++i) {
+                both(0.25F, 0.25F);
+            }
+
+            CHECK(differences == 0U);
+        }
+    }
+
+    SUBCASE("in the state")
+    {
+        // Finite input can overflow: the largest float minus its negative is infinite. That
+        // output is zero, and the blocker carries on.
+        dc_blocker blocker{rate_48k};
+        const auto coefficient = std::bit_cast<float>(0x3F7F'D51BU);  // r at 48 kHz
+
+        CHECK(blocker.process(largest) == largest);
+        CHECK(blocker.process(-largest) == 0.0F);
+        CHECK(blocker.process(0.0F) == largest);
+        CHECK(blocker.process(0.0F) == coefficient * largest);
     }
 }
 
