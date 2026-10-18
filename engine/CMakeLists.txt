@@ -2,6 +2,7 @@
 
 add_library(previously_engine STATIC
     src/clock_tracker.cpp
+    src/dc_blocker.cpp
     src/engine.cpp
 )
 
@@ -13,6 +14,7 @@ target_include_directories(previously_engine PUBLIC
 
 previously_apply_strict_options(previously_engine)
 previously_apply_embedded_subset(previously_engine)
+previously_apply_float_rules(previously_engine)
 
 set_target_properties(previously_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

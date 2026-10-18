@@ -10,7 +10,7 @@ audio on a Cortex-M7. Where we depart from those sources, the reason is written 
 |---|---|
 | `.clang-format` (LLVM 23) | All formatting (§2) |
 | `.clang-tidy` (LLVM 23) | Naming (§5) and most language rules (§3) |
-| `cmake/previously_options.cmake` | Warnings as errors, no exceptions, no RTTI (§3, §4) |
+| `cmake/previously_options.cmake` | Warnings as errors, no exceptions, no RTTI, no fused multiply-adds (§3, §4) |
 | cppcheck | Additional static analysis (§4) |
 | Sanitizers (ASan, UBSan) | Memory and undefined-behaviour errors in every host test run |
 | Realtime guard (tests) | No allocation inside `engine::process()` (§3.3) |
@@ -201,8 +201,25 @@ Preconditions and postconditions are stated with `previously::expects()` and `pr
 ### 3.12 Macros
 
 - **None**, except where the toolchain or a third-party API requires one (doctest's `TEST_CASE`,
-  `NDEBUG`).
+  `NDEBUG`, the CPU checks in `tests/flush_to_zero_mode.cpp`).
 - Constants are `constexpr`, functions are functions, and contracts use `std::source_location`.
+
+### 3.13 Floating point
+
+The engine computes the same bits on every target (ADR 0005):
+
+- **Every multiply and add rounds on its own.** The engine builds with `-ffp-contract=off`
+  (`previously_apply_float_rules`). Where a fused multiply-add is wanted, write `std::fma`.
+- **No libm transcendental functions** on a rendered path, including coefficients computed at
+  construction. Use +, −, × and ÷, `std::sqrt`, or a `constexpr` table.
+- **Nothing produces or consumes a subnormal.** Apply `flush_below_floor()` (`audio_floor.hpp`)
+  where audio enters an arithmetic path, between processing stages, and to recursive state.
+- **Rendered arithmetic lives in the engine's `.cpp` files.**
+  - The Rack plugin compiles its own files with Rack's flags, which include
+    `-funsafe-math-optimizations`.
+  - An inline function used both there and in the engine would be compiled both ways, and the
+    linker keeps only one of the copies, of its own choosing.
+  - Headers may hold comparisons and integer arithmetic.
 
 ---
 

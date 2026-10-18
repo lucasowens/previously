@@ -6,10 +6,12 @@ target_include_directories(doctest SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/vendor
 add_executable(previously_tests
     test_main.cpp
     realtime_guard.cpp
+    flush_to_zero_mode.cpp
     test_units.cpp
     test_sample_time.cpp
     test_clock_tracker.cpp
     test_spsc_queue.cpp
+    test_dc_blocker.cpp
     test_engine.cpp
     test_engine_clock.cpp
     test_wav.cpp
