@@ -11,6 +11,8 @@
 #include "previously/clock_events.hpp"
 #include "previously/clock_tracker.hpp"
 #include "previously/command.hpp"
+#include "previously/page_pool.hpp"
+#include "previously/recorder.hpp"
 #include "previously/spsc_queue.hpp"
 #include "previously/units.hpp"
 
@@ -36,7 +38,22 @@ public:
     /// bytes). The gate clock needs only a sixth of it; MIDI clock needs all of it.
     static constexpr std::size_t clock_history_pulses = std::size_t{16} * 4 * 24;
 
-    explicit engine(const engine_config& config) noexcept;
+    /// The history is the newest 46 pages. Once they have filled, 45 are complete: at least
+    /// 30.7 s (DESIGN.md §2.3).
+    static constexpr std::size_t history_pages = recorder::max_history_pages;
+
+    /// A capture holds at most 47 pages, in flight or final (DESIGN.md §2.3).
+    static constexpr std::size_t max_capture_pages = 47;
+
+    // P1 at its fullest: two slots, one of them being replaced, and one capture in flight.
+    static_assert((3 * max_capture_pages) + history_pages <= page_pool::max_pages,
+                  "the pool must hold P1's 187 pages");
+
+    /// `tape` is the memory loop audio lives in: SDRAM on the Daisy, a heap block on a host. It is
+    /// carved into pages of page_frames_for(config.rate) frames, of which it must hold at least
+    /// history_pages, and at most page_pool::max_pages are used. It must outlive the engine, and
+    /// is not touched before the first process(). Without it, nothing is recorded.
+    explicit engine(const engine_config& config, std::span<stereo_frame> tape = {}) noexcept;
 
     /// The largest block whose grid pulses always fit in one clock_report: reports are at least
     /// half of clock_tracker::double_trigger_spacing apart. 3,072 frames at 48 kHz.
@@ -58,6 +75,10 @@ public:
     /// The clock grid as of the end of the last processed block. Audio thread only.
     [[nodiscard]] const clock_report& clock() const noexcept;
 
+    /// The recorded history: every frame of input so far, DC-blocked, at its sample clock
+    /// position, for as long as its page is in the history. Audio thread only.
+    [[nodiscard]] const recorder& history() const noexcept;
+
     [[nodiscard]] const engine_config& config() const noexcept;
 
 private:
@@ -78,6 +99,10 @@ private:
     sample_time                last_reported_period_;
     std::optional<sample_time> last_reported_bar_zero_;
     std::uint32_t              resets_seen_{0};
+
+    // The tape. The pool is declared before everything that holds its pages, so it outlives them.
+    page_pool pool_;
+    recorder  recorder_;
 };
 
 }  // namespace previously

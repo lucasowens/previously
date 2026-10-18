@@ -10,9 +10,11 @@
 
 namespace previously {
 
-engine::engine(const engine_config& config) noexcept
+engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexcept
     : config_{config},
-      clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_}
+      clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
+      pool_{tape, page_frames_for(config.rate)},
+      recorder_{pool_, config.rate, history_pages}
 {
     expects(config.rate.hz() > 0U);
     expects(config.max_block_frames > 0U);
@@ -66,6 +68,8 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
     std::ranges::copy(block.in_left, block.out_left.begin());
     std::ranges::copy(block.in_right, block.out_right.begin());
 
+    recorder_.record(block.in_left, block.in_right);
+
     sample_clock_ += frames;
 
     report_clock(block_start, block_end);
@@ -84,6 +88,11 @@ samples engine::sample_clock() const noexcept
 const clock_report& engine::clock() const noexcept
 {
     return clock_report_;
+}
+
+const recorder& engine::history() const noexcept
+{
+    return recorder_;
 }
 
 const engine_config& engine::config() const noexcept
