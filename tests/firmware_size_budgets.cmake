@@ -1,6 +1,7 @@
 # Checks T0's firmware budgets without the ARM toolchain. cmake/check_firmware_size.cmake runs in
 # a fresh cmake -P, as the firmware build runs it, against a stand-in for arm-none-eabi-objdump
-# that prints a fixture. Inputs: CHECK_SCRIPT, WORK_DIR.
+# that prints a fixture, and with libDaisy's linker script for the region. Inputs: CHECK_SCRIPT,
+# LINKER_SCRIPT, WORK_DIR.
 
 cmake_minimum_required(VERSION 3.25)  # script mode inherits no policies from the project
 
@@ -116,6 +117,18 @@ write_variant(out_of_order [=[
  24 .early_rodata 00000008  08000298  08000298  0001ab00  2**2
                   CONTENTS, ALLOC, LOAD, READONLY, DATA]=])
 
+# Either side of the region's end: a load image in its last 4 bytes takes flash up to the end, and
+# one starting at the end lies outside it.
+set(debug_line_str_entry [=[
+ 23 .debug_line_str 000001d5  00000000  00000000  0001a924  2**0
+                  CONTENTS, READONLY, DEBUGGING, OCTETS]=])
+write_variant(last_word "${debug_line_str_entry}" "${debug_line_str_entry}
+ 24 .last_word    00000004  0801fffc  0801fffc  0001ab00  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA")
+write_variant(past_end "${debug_line_str_entry}" "${debug_line_str_entry}
+ 24 .past_end     00000004  08020000  08020000  0001ab00  2**2
+                  CONTENTS, ALLOC, LOAD, READONLY, DATA")
+
 # Padding between the variables takes RAM too. Here .got.plt ends at 0x24000a44 and .bss, aligned
 # to 8, starts at 0x24000a48: the variables span 80,412 bytes, and their contents sum to 80,408.
 write_variant(ram_padding [=[
@@ -152,15 +165,27 @@ write_variant(no_bss ".bss          00012fd4" ".bsss         00012fd4")
 write_fixture(unreadable "Sections:\nIdx Name          Size      VMA       LMA       File off  Algn\n")
 
 # Runs the check and requires its exit status (0 or not) and a line of its output. CMake wraps a
-# long error message, so a pattern spanning words allows any whitespace between them.
+# long error message, so a pattern spanning words allows any whitespace between them. The region
+# is FLASH unless `region` is set around the call.
 function(expect name fixture flash_bytes ram_bytes should_pass expected_output)
+    if(NOT DEFINED region)
+        set(region FLASH)
+    endif()
+
+    # An empty flash budget leaves it out, so the check takes the region's length.
+    set(flash_budget "")
+
+    if(NOT "${flash_bytes}" STREQUAL "")
+        set(flash_budget -DFLASH_BYTES=${flash_bytes})
+    endif()
+
     execute_process(
         COMMAND "${CMAKE_COMMAND}"
                 -DOBJDUMP_TOOL=${fake_objdump}
                 -DELF=${WORK_DIR}/${fixture}
-                -DFLASH_ORIGIN=0x08000000
-                -DFLASH_REGION_BYTES=131072
-                -DFLASH_BYTES=${flash_bytes}
+                -DLINKER_SCRIPT=${LINKER_SCRIPT}
+                -DFLASH_REGION=${region}
+                ${flash_budget}
                 -DRAM_BYTES=${ram_bytes}
                 -P "${CHECK_SCRIPT}"
         RESULT_VARIABLE result
@@ -189,6 +214,10 @@ expect("padding between the variables takes RAM too" ram_padding 131072 80411 FA
        "exceeds the RAM budget \\(80411 bytes\\) by 1")
 expect("the variables span from the lowest address to the highest" ram_out_of_order 131072 80404
        TRUE "firmware RAM: 80404 / 80404 bytes")
+expect("a load image in the region's last bytes counts" last_word "" 114688 TRUE
+       "firmware flash: 131072 / 131072 bytes")
+expect("a load image at the region's end does not" past_end "" 114688 TRUE
+       "firmware flash: 98476 / 131072 bytes")
 expect("variables in DTCM count" dtcm 131072 114688 TRUE
        "firmware RAM: 81428 / 114688 bytes")
 expect("a load image in QSPI takes no internal flash" qspi 98476 114688 TRUE
@@ -197,20 +226,32 @@ expect("the furthest load image ends the image" out_of_order 98476 114688 TRUE
        "firmware flash: 98476 / 98476 bytes")
 expect("an unreadable section table fails" unreadable 131072 114688 FALSE
        "could not read the section table")
-expect("a table with no load image in flash fails, naming the bounds" no_load_images 131072 114688
-       FALSE "no load image in flash \\(FLASH_ORIGIN 0x08000000,[ \n]+FLASH_REGION_BYTES[ \n]+131072\\)")
+expect("a table with no load image in flash fails, naming the region" no_load_images 131072 114688
+       FALSE "no load image in region FLASH of")
 expect("a table without .data fails" no_data 131072 114688 FALSE
        "could not read the section table")
 expect("a table without .bss fails" no_bss 131072 114688 FALSE
        "could not read the section table")
+
+# The region and its budget come from the linker script.
+expect("the flash budget is the region's length by default" image "" 114688 TRUE
+       "firmware flash: 98476 / 131072 bytes")
+
+set(region QSPIFLASH)
+expect("a region the image does not load into fails, naming it" image 131072 114688 FALSE
+       "no load image in region QSPIFLASH of")
+
+set(region FLASH2)
+expect("a region the script lacks fails, naming it" image 131072 114688 FALSE
+       "has no memory region FLASH2")
+unset(region)
 
 # An input left out is named, rather than surfacing as an arithmetic error.
 execute_process(
     COMMAND "${CMAKE_COMMAND}"
             -DOBJDUMP_TOOL=${fake_objdump}
             -DELF=${WORK_DIR}/image
-            -DFLASH_REGION_BYTES=131072
-            -DFLASH_BYTES=131072
+            -DFLASH_REGION=FLASH
             -DRAM_BYTES=114688
             -P "${CHECK_SCRIPT}"
     RESULT_VARIABLE result
@@ -218,6 +259,6 @@ execute_process(
     ERROR_VARIABLE  output
 )
 
-if(result EQUAL 0 OR NOT output MATCHES "needs FLASH_ORIGIN")
-    message(SEND_ERROR "a missing input: expected \"needs FLASH_ORIGIN\", got ${result}:\n${output}")
+if(result EQUAL 0 OR NOT output MATCHES "needs LINKER_SCRIPT")
+    message(SEND_ERROR "a missing input: expected \"needs LINKER_SCRIPT\", got ${result}:\n${output}")
 endif()

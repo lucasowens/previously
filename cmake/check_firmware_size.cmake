@@ -9,24 +9,35 @@
 #          variable to the end of the furthest, alignment padding included.
 #
 # Both come from one section table, `objdump -h`, which gives each section's size, addresses and
-# flags.
+# flags. The flash region comes from the linker script the build links with.
 #
-# Inputs: OBJDUMP_TOOL, ELF, FLASH_ORIGIN and FLASH_REGION_BYTES (the flash region as the linker
-# script declares it), FLASH_BYTES and RAM_BYTES (the budgets).
+# Inputs: OBJDUMP_TOOL, ELF, LINKER_SCRIPT, FLASH_REGION (the name of its region the image loads
+# into), RAM_BYTES (the RAM budget), and optionally FLASH_BYTES (a flash budget below the
+# region's length, which is the budget otherwise).
 
 # A script run with cmake -P inherits no policies from the project. Without its own, CMake 3.x
 # leaves CMP0057 unset and rejects IN_LIST below.
 cmake_minimum_required(VERSION 3.25)
 
-foreach(input IN ITEMS OBJDUMP_TOOL ELF FLASH_ORIGIN FLASH_REGION_BYTES FLASH_BYTES RAM_BYTES)
+foreach(input IN ITEMS OBJDUMP_TOOL ELF LINKER_SCRIPT FLASH_REGION RAM_BYTES)
     if(NOT DEFINED ${input})
         message(FATAL_ERROR "check_firmware_size.cmake needs ${input}")
     endif()
 endforeach()
 
-# Load images outside the region (QSPI) take none of the internal flash.
-math(EXPR flash_origin "${FLASH_ORIGIN}")
-math(EXPR flash_region_end "${FLASH_ORIGIN} + ${FLASH_REGION_BYTES}")
+include("${CMAKE_CURRENT_LIST_DIR}/linker_memory_region.cmake")
+read_memory_region("${LINKER_SCRIPT}" ${FLASH_REGION} flash_origin flash_region_bytes)
+
+if("${flash_origin}" STREQUAL "")
+    message(FATAL_ERROR "${LINKER_SCRIPT} has no memory region ${FLASH_REGION} that can be read")
+endif()
+
+# Load images outside the region (QSPI, under the current layout) take none of it.
+math(EXPR flash_region_end "${flash_origin} + ${flash_region_bytes}")
+
+if(NOT DEFINED FLASH_BYTES)
+    set(FLASH_BYTES ${flash_region_bytes})
+endif()
 
 # The variables, by where they live today. The linker adds .got and .got.plt after .data;
 # libDaisy's .dtcmram_bss is for variables placed in DTCM explicitly.
@@ -98,10 +109,10 @@ if(NOT ".data" IN_LIST sections_seen OR NOT ".bss" IN_LIST sections_seen)
     message(FATAL_ERROR "could not read the section table of ${ELF}")
 endif()
 
-# Every image has a load image in flash. Without one, the region given does not match the link.
+# Every image has a load image in its region. Without one, the region named is not the one the
+# image loads into.
 if(image_end EQUAL flash_origin)
-    message(FATAL_ERROR "no load image in flash (FLASH_ORIGIN ${FLASH_ORIGIN}, FLASH_REGION_BYTES "
-                        "${FLASH_REGION_BYTES}): do they match the linker script?")
+    message(FATAL_ERROR "no load image in region ${FLASH_REGION} of ${LINKER_SCRIPT}")
 endif()
 
 math(EXPR flash_used "${image_end} - ${flash_origin}")

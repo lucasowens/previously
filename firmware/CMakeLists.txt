@@ -44,10 +44,9 @@ previously_apply_embedded_subset(${FIRMWARE_NAME})
 
 # T0: the size budgets, checked after every link (cmake/check_firmware_size.cmake).
 #
-# Flash: the STM32H750's internal flash, as libDaisy's linker script declares its FLASH region,
-# and all of it the budget. A change of layout changes the region here, in one place.
-set(flash_origin       0x08000000)
-set(flash_region_bytes 131072)  # 128 KiB
+# Flash: the FLASH region of the linker script this build links with (DaisyProject sets
+# LINKER_SCRIPT), and all of it the budget. The check reads the region's origin and length from the
+# script, so a change of layout needs no numbers changed here.
 
 # RAM: the variables may take 112 KiB, DTCM's 128 KiB less 16 KiB for the stack. The reserve is
 # about 9 times the measured need. GCC's -fstack-usage report, before LTO, summed along the
@@ -60,9 +59,8 @@ add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
     COMMAND "${CMAKE_COMMAND}"
             -DOBJDUMP_TOOL=${CMAKE_OBJDUMP}
             -DELF=$<TARGET_FILE:${FIRMWARE_NAME}>
-            -DFLASH_ORIGIN=${flash_origin}
-            -DFLASH_REGION_BYTES=${flash_region_bytes}
-            -DFLASH_BYTES=${flash_region_bytes}
+            -DLINKER_SCRIPT=${LINKER_SCRIPT}
+            -DFLASH_REGION=FLASH
             -DRAM_BYTES=${ram_budget_bytes}
             -P "${previously_root}/cmake/check_firmware_size.cmake"
     VERBATIM

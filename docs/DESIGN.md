@@ -171,7 +171,8 @@ so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48
 
 **Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it.
 T0 counts it as the linker does: from the start of flash to the end of the furthest load image,
-alignment padding included.
+alignment padding included. The region's origin and length are read from the linker script the
+build links with, so the budget follows the layout.
 
 | Stage | Flash used | Mostly |
 |---|---|---|
