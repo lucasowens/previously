@@ -40,8 +40,8 @@ public:
     static constexpr std::size_t max_history_pages = 46;
 
     /// Records into pages taken from `pool`, keeping the newest `history_pages` of them. A pool
-    /// with pages must have at least that many; one without any leaves nothing recorded. The pool
-    /// must outlive the recorder.
+    /// with pages must have at least that many; one without any leaves nothing recorded, and costs
+    /// nothing per frame. The pool must outlive the recorder.
     recorder(page_pool& pool, sample_rate rate, std::size_t history_pages) noexcept;
 
     /// Gives the history's pages back to the pool.
@@ -92,7 +92,8 @@ private:
     std::uint64_t offset_mask_;  // position & offset_mask_ is the frame within its page
     std::int64_t  end_{0};
 
-    // The history: page number n's page is in slot n mod history_pages_.
+    // The history: page number n's page is in slot n mod history_pages_, or no_page for a hole
+    // and before the slot's first page.
     std::array<page_id, max_history_pages> pages_{};
     std::int64_t                           newest_page_{-1};
 };

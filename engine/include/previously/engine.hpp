@@ -53,6 +53,9 @@ public:
     /// carved into pages of page_frames_for(config.rate) frames, of which it must hold at least
     /// history_pages, and at most page_pool::max_pages are used. It must outlive the engine, and
     /// is not touched before the first process(). Without it, nothing is recorded.
+    ///
+    /// A tape too small is a programming error, caught in debug builds. A release build keeps as
+    /// long a history as the tape's pages allow, and records nothing on a tape under one page.
     explicit engine(const engine_config& config, std::span<stereo_frame> tape = {}) noexcept;
 
     /// The largest block whose grid pulses always fit in one clock_report: reports are at least
