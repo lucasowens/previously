@@ -96,9 +96,9 @@ hook runs the format check and the host tests.
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
   grew.
-- **The engine is built at `-O0` in the firmware** (DESIGN §2.3): flash is 81% now, 57% with
-  the engine optimized. If the flash budget trips, fix that first, then try `-Os` and report the
-  trade-off.
+- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 81% now,
+  57% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
+  report the trade-off.
 - **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
   the tests each owes; the crossfade-bits test and the floor test through the seam correlation
   moved to capture and playback. Before the Rack controls, decide how Rack gets its tape

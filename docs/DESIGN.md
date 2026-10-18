@@ -205,11 +205,10 @@ The figures are from a local build. The image embeds source paths (the engine's 
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
 toolchain's paths: CI builds the same commit 340 bytes larger.
 
-**The engine is built without optimization in the firmware** (found in PR #10, to be fixed
-separately). libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options`,
-which reaches only targets defined after it in the firmware's directory. The engine is added
-before it, and the toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at
-GCC's default, `-O0`.
+**The engine is built without optimization in the firmware** (found in PR #10, issue #11).
+libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options`, which reaches
+only targets defined after it in the firmware's directory. The engine is added before it, and the
+toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
 - **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
   scratch build takes 73,608 bytes (56%) before the tape and 74,992 bytes (57%) with it.
 - **Speed.** The engine's speed on the device would not be representative until it is fixed.
