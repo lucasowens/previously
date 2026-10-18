@@ -170,7 +170,7 @@ so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48
 `int64_t` sample counts, and fractional positions are fixed-point (Q32.32). §3.6 covers this.
 
 **Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it.
-T0 counts it as the linker does: from the start of flash to the end of the last load image,
+T0 counts it as the linker does: from the start of flash to the end of the furthest load image,
 alignment padding included.
 
 | Stage | Flash used | Mostly |
@@ -200,7 +200,8 @@ build fails if the flash budget is exceeded (T0). When it does:
 | DTCM, 128 KB | The stack | The variables and the stack |
 
 **The RAM budget (T0).** The build fails if the variables outgrow **112 KiB**: DTCM less 16 KiB
-for the stack. Within it, the move to the bootloader layout stays open.
+for the stack. Within it, the move to the bootloader layout stays open. They are counted like
+flash: from the first variable to the end of the furthest, alignment padding included.
 
 - **Today** they take 80,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (26,008 bytes, 24,768 of them the clock history).

@@ -1,29 +1,37 @@
 # Firmware size budgets (tier T0). Fails the build when either is exceeded:
 #
 #   flash  the image in the STM32H750's internal flash, counted as the linker counts it: from the
-#          start of flash to the end of the last load image, alignment padding included.
+#          start of flash to the end of the furthest load image, alignment padding included.
 #   RAM    the variables in internal RAM: .data and .bss. Today they live in AXI SRAM, and the
 #          stack has DTCM to itself. Under the QSPI bootloader layout (DESIGN.md §2.3) they move
 #          into DTCM and share its 128 KiB with the stack, so the budget is DTCM less a stack
-#          reserve. Within it, that move stays open.
+#          reserve. Within it, that move stays open. Counted the same way: from the first
+#          variable to the end of the furthest, alignment padding included.
 #
-# Both come from one section table, `objdump -h`, which gives each section's size, load address
-# and flags.
+# Both come from one section table, `objdump -h`, which gives each section's size, addresses and
+# flags.
 #
-# Inputs: OBJDUMP_TOOL (arm-none-eabi-objdump), ELF, FLASH_BYTES, RAM_BYTES.
+# Inputs: OBJDUMP_TOOL, ELF, FLASH_ORIGIN and FLASH_REGION_BYTES (the flash region as the linker
+# script declares it), FLASH_BYTES and RAM_BYTES (the budgets).
 
 # A script run with cmake -P inherits no policies from the project. Without its own, CMake 3.x
 # leaves CMP0057 unset and rejects IN_LIST below.
 cmake_minimum_required(VERSION 3.25)
 
-# The internal flash, as libDaisy's linker script declares it. The linker refuses an image that
-# does not fit, so no load image lies beyond it, and none elsewhere (QSPI) counts.
-math(EXPR flash_origin "0x08000000")
-math(EXPR flash_region_end "0x08000000 + (128 * 1024)")
+foreach(input IN ITEMS OBJDUMP_TOOL ELF FLASH_ORIGIN FLASH_REGION_BYTES FLASH_BYTES RAM_BYTES)
+    if(NOT DEFINED ${input})
+        message(FATAL_ERROR "check_firmware_size.cmake needs ${input}")
+    endif()
+endforeach()
 
-# The sections the bootloader layout places in DTCM. The linker adds .got and .got.plt after
-# .data; libDaisy's .dtcmram_bss is for variables placed in DTCM explicitly.
-set(ram_sections .data .got .got.plt .bss .dtcmram_bss)
+# Load images outside the region (QSPI) take none of the internal flash.
+math(EXPR flash_origin "${FLASH_ORIGIN}")
+math(EXPR flash_region_end "${FLASH_ORIGIN} + ${FLASH_REGION_BYTES}")
+
+# The variables, by where they live today. The linker adds .got and .got.plt after .data;
+# libDaisy's .dtcmram_bss is for variables placed in DTCM explicitly.
+set(sram_sections .data .got .got.plt .bss)
+set(dtcm_sections .dtcmram_bss)
 
 execute_process(
     COMMAND "${OBJDUMP_TOOL}" -h "${ELF}"
@@ -36,9 +44,23 @@ execute_process(
 # has a load address too, but no LOAD flag, and takes no flash.
 string(REPLACE "\n" ";" table_lines "${section_table}")
 set(image_end ${flash_origin})
-set(ram_used 0)
+set(sram_start "")
+set(sram_end 0)
+set(dtcm_start "")
+set(dtcm_end 0)
 set(sections_seen "")
 set(flags_next FALSE)
+
+# Widens a span of addresses, kept as <group>_start and <group>_end, to cover [start, end).
+macro(cover group start end)
+    if("${${group}_start}" STREQUAL "" OR ${start} LESS ${group}_start)
+        set(${group}_start ${start})
+    endif()
+
+    if(${end} GREATER ${group}_end)
+        set(${group}_end ${end})
+    endif()
+endmacro()
 
 foreach(line IN LISTS table_lines)
     if(flags_next)
@@ -53,25 +75,33 @@ foreach(line IN LISTS table_lines)
                 set(image_end ${load_end})
             endif()
         endif()
-    elseif(line MATCHES "^ *[0-9]+ ([^ ]+) +([0-9a-f]+) +[0-9a-f]+ +([0-9a-f]+) +[0-9a-f]+ +2[*][*][0-9]+$")
+    elseif(line MATCHES "^ *[0-9]+ ([^ ]+) +([0-9a-f]+) +([0-9a-f]+) +([0-9a-f]+) +[0-9a-f]+ +2[*][*][0-9]+$")
         set(section_name "${CMAKE_MATCH_1}")
         math(EXPR section_size "0x${CMAKE_MATCH_2}")
-        math(EXPR load_address "0x${CMAKE_MATCH_3}")
+        math(EXPR address "0x${CMAKE_MATCH_3}")
+        math(EXPR load_address "0x${CMAKE_MATCH_4}")
+        math(EXPR address_end "${address} + ${section_size}")
         list(APPEND sections_seen "${section_name}")
         set(flags_next TRUE)
 
-        if(section_name IN_LIST ram_sections)
-            math(EXPR ram_used "${ram_used} + ${section_size}")
+        if(section_name IN_LIST sram_sections)
+            cover(sram ${address} ${address_end})
+        elseif(section_name IN_LIST dtcm_sections)
+            cover(dtcm ${address} ${address_end})
         endif()
     endif()
 endforeach()
 
-# Every image has .data, .bss and a load image in flash. Without them the table was not
-# understood, and a total of zero would pass silently.
-if(NOT ".data" IN_LIST sections_seen
-   OR NOT ".bss" IN_LIST sections_seen
-   OR image_end EQUAL flash_origin)
+# Every image has .data and .bss. Without either, the table was not understood, and RAM would be
+# understated.
+if(NOT ".data" IN_LIST sections_seen OR NOT ".bss" IN_LIST sections_seen)
     message(FATAL_ERROR "could not read the section table of ${ELF}")
+endif()
+
+# Every image has a load image in flash. Without one, the region given does not match the link.
+if(image_end EQUAL flash_origin)
+    message(FATAL_ERROR "no load image in flash (FLASH_ORIGIN ${FLASH_ORIGIN}, FLASH_REGION_BYTES "
+                        "${FLASH_REGION_BYTES}): do they match the linker script?")
 endif()
 
 math(EXPR flash_used "${image_end} - ${flash_origin}")
@@ -83,6 +113,14 @@ if(flash_used GREATER FLASH_BYTES)
     math(EXPR flash_over "${flash_used} - ${FLASH_BYTES}")
     message(FATAL_ERROR "firmware exceeds the flash budget (${FLASH_BYTES} bytes) by ${flash_over}")
 endif()
+
+set(ram_used 0)
+
+foreach(group IN ITEMS sram dtcm)
+    if(NOT "${${group}_start}" STREQUAL "")
+        math(EXPR ram_used "${ram_used} + ${${group}_end} - ${${group}_start}")
+    endif()
+endforeach()
 
 math(EXPR ram_percent "(${ram_used} * 100) / ${RAM_BYTES}")
 
