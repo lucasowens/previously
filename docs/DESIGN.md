@@ -169,13 +169,20 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
 so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48 kHz). Positions are
 `int64_t` sample counts, and fractional positions are fixed-point (Q32.32). §3.6 covers this.
 
-**Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it:
+**Flash.** The STM32H750 has only **128 KB of internal flash**, and the firmware is filling it.
+T0 counts it as the linker does: from the start of flash to the end of the furthest load image,
+alignment padding included. The region's origin and length are read from the linker script the
+build links with, so the budget follows the layout.
 
 | Stage | Flash used | Mostly |
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
-| With the clock wiring and hiccup handling (P1) | 74% (97,504 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
-| With the tracker's edge times (P1) | 75% (98,468 bytes) | |
+| With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
+| With the tracker's edge times (P1) | 75% (98,476 bytes) | |
+
+The figures are from a local build. The image embeds source paths (the engine's contract
+locations, and libstdc++'s header names), so it grows with the length of the repository's and the
+toolchain's paths: CI builds the same commit 340 bytes larger.
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
@@ -194,7 +201,9 @@ build fails if the flash budget is exceeded (T0). When it does:
 | DTCM, 128 KB | The stack | The variables and the stack |
 
 **The RAM budget (T0).** The build fails if the variables outgrow **112 KiB**: DTCM less 16 KiB
-for the stack. Within it, the move to the bootloader layout stays open.
+for the stack. Within it, the move to the bootloader layout stays open. They are counted like
+flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
+padding included, plus `.dtcmram_bss`.
 
 - **Today** they take 80,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (26,008 bytes, 24,768 of them the clock history).
@@ -299,7 +308,7 @@ grid. Full explanation, measurements and the mutation-testing record:
     oldest pulses, so the history is shorter until new pulses overwrite them in turn. When the
     fill-ins of both gaps and the pulse between them outnumber the history, the slots a
     retirement needs are gone, and the clock reads as stopped and restarted: the fill-ins stay.
-    On the engine's 1,536 pulses that happens beyond 768.5× (gaps of 96 s at 120 BPM and
+    On the engine's 1,536 pulses that happens from 768.5× (gaps of 96 s at 120 BPM and
     4 PPQN), far slower than any tempo.
 - **Reset** (gate, or MIDI Start): the pulse within 2 ms of it, delivered in either order,
   becomes bar 0. A late-delivered reset is resolved from the history.

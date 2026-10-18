@@ -1174,6 +1174,39 @@ TEST_CASE("a slowdown whose fill-ins overwrote the pulse before them reads as a 
         CHECK_FALSE(known(tracker.edge(134)).filled_in);
         CHECK(known(tracker.edge(102)).filled_in);
     }
+
+    // Between whole numbers the boundary is a tie. With gaps of 17.5 periods, each slow pulse
+    // lands exactly as the last slot before it closes, and a pulse at the close is the next pulse,
+    // after a fill-in: 17 fill-ins per gap, one too many. Gaps of 17.4 periods leave 16 per gap:
+    // retired. The same tie sets the engine's boundary at 768.5× on 1,536 pulses (DESIGN.md §3.3),
+    // measured: 768.4× retired, 768.5× and 768.6× a stop and restart.
+    SUBCASE("gaps of 17.4 periods are retired")
+    {
+        clock_history<33> history{};
+        clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+        feed(tracker, steady);
+        tracker.pulse(at(gate_period * (99.0 + 17.4)));
+        tracker.pulse(at(gate_period * (99.0 + 34.8)));
+
+        CHECK(tracker.latest_pulse() == 101);
+        CHECK(std::abs(error_in_samples(known(tracker.pulse_period()), gate_period * 17.4)) < 0.01);
+    }
+
+    SUBCASE("gaps of 17.5 periods, landing as a slot closes, are a stop and a restart")
+    {
+        clock_history<33> history{};
+        clock_tracker     tracker{clock_tracker_config::gate(rate_48k), history};
+
+        feed(tracker, steady);
+        tracker.pulse(at(gate_period * (99.0 + 17.5)));
+        REQUIRE(tracker.latest_pulse() == 99 + 18);  // 17 fill-ins, then the slow pulse
+        tracker.pulse(at(gate_period * (99.0 + 35.0)));
+
+        CHECK(tracker.latest_pulse() == 99 + 36);
+        CHECK(tracker.state() == clock_state::locked);
+        CHECK(tracker.pulse_period() == at(gate_period));
+    }
 }
 
 TEST_CASE("a stray first edge is replaced among the edges too")

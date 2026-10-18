@@ -59,6 +59,16 @@ add_test(NAME render_rejects_oversized_block
 add_test(NAME firmware_size_budgets
     COMMAND ${CMAKE_COMMAND}
             -DCHECK_SCRIPT=${PROJECT_SOURCE_DIR}/cmake/check_firmware_size.cmake
+            -DLINKER_SCRIPT=${PROJECT_SOURCE_DIR}/vendor/libDaisy/core/STM32H750IB_flash.lds
             -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/firmware_size
             -P ${CMAKE_CURRENT_SOURCE_DIR}/firmware_size_budgets.cmake
+)
+
+# The budgets' memory regions, read from the linker script.
+add_test(NAME linker_memory_region
+    COMMAND ${CMAKE_COMMAND}
+            -DMODULE=${PROJECT_SOURCE_DIR}/cmake/linker_memory_region.cmake
+            -DLIBDAISY_CORE=${PROJECT_SOURCE_DIR}/vendor/libDaisy/core
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/linker_memory_region
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/linker_memory_region.cmake
 )
