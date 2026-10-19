@@ -73,7 +73,7 @@ hook runs the format check and the host tests.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#10)
+## Current state (after PRs #1–#13)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -87,9 +87,11 @@ hook runs the format check and the host tests.
   - Edge times (PR #7): the tracker's `clock_history` keeps each pulse's raw edge and a fill-in
     bit beside its filtered time, read with `edge(index)`. The firmware build also enforces a
     RAM budget (DESIGN §2.3). PR #9 counts flash and RAM as the linker does.
-  - The paged tape (PR #10, host only): `page_pool`, the `recorder` with its 46-page history,
-    the DC blocker, the audio floor (2^-50) and `-ffp-contract=off` (ADR 0005, CODING_STANDARD
-    §3.13). The engine takes an optional tape span; Rack and the firmware pass none yet.
+  - The paged tape (PR #10): `page_pool`, the `recorder` with its 46-page history, the DC
+    blocker, the audio floor (2^-50) and `-ffp-contract=off` (ADR 0005, CODING_STANDARD §3.13).
+    The engine takes an optional tape span. The firmware passes none.
+  - Rack's tape (PR #13, `rack/src/tape.hpp`): one 210 MiB tape per module, allocated when it is
+    created and left unwritten; the engine is rebuilt over it at every rate (DESIGN §15 Q10).
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -102,7 +104,8 @@ hook runs the format check and the host tests.
 - **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 83% now,
   57% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
-  the tests each owes; the crossfade-bits test and the floor test through the seam correlation
-  moved to capture and playback. Before the Rack controls, decide how Rack gets its tape
-  (DESIGN §15, question 10).
+- **Next:** the display (DESIGN §9.3): a UI model and a 128×64 framebuffer in the engine, shown
+  on the Rack panel, starting with the clock and the recorded history. Then capture and playback
+  (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes; the
+  crossfade-bits test and the floor test through the seam correlation moved to capture and
+  playback.

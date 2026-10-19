@@ -176,9 +176,17 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
   capture in flight at a time (§3.4). P2's four slots and undo need a policy (§15).
 - Because pages scale with the sample rate, these counts hold on every target. A host sizes the
   pool in bytes for its rate: at 96 kHz each page is 512 KiB.
-- **Who gives the engine a tape.** Today, only the tests. Rack and the firmware pass none, and
-  record nothing, until the Rack controls (§14) and the hardware work. Rack can change the sample
-  rate on its audio thread, where a tape cannot be reallocated (§15, question 10).
+- **Who gives the engine a tape.** The tests, and Rack. The firmware passes none, and records
+  nothing, until the hardware work.
+  - **Rack** allocates one tape when the module is created: 210 pages at 192 kHz, 210 MiB
+    (`rack/src/tape.hpp`). It is not written when it is allocated, so it costs address space
+    rather than RAM until the recorder writes it. Measured on macOS: allocating it takes under
+    10 µs and adds no resident memory, and the 48 kHz history written adds 11.5 MiB.
+  - **A rate change** can come on Rack's audio thread (§15, question 10). The engine is rebuilt
+    over the same memory, allocating nothing. Above 192 kHz the memory holds fewer pages: 105 at
+    384 kHz and 52 at 768 kHz. That is still the whole history, with less room for captures.
+  - **Not measured:** Windows may count the whole allocation as committed memory before it is
+    written.
 - The engine never touches the pool before its first `process()`. On the Daisy, SDRAM is
   configured inside `hardware.Init()`, after static constructors have run. A test fills a tape
   with a pattern, constructs the engine, and checks the pattern is intact.
@@ -1402,7 +1410,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only); next, capture and playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); next, capture and playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
@@ -1449,12 +1457,17 @@ Schematic, PCB, panel, cue codec and SD save/load.
    more frequent moves. To be measured in Rack.
 9. **MIDI clock and the bar-line estimate (§3.4).** Jittery sources need their own tolerance,
    and smoothing.
-10. **Rack's tape and sample-rate changes (§2.3).** To decide before the Rack controls.
+10. **Rack's tape and sample-rate changes (§2.3).** Decided in PR #13: one tape per module,
+    allocated when it is created and sized for 192 kHz, with the engine rebuilt over it at every
+    rate.
     - Rack can change the rate on its audio thread: the Audio module calls
       `setSuggestedSampleRate` from `processInput`, and the plugin rebuilds its engine in
-      `onSampleRateChange`. A tape's bytes depend on the rate, and it cannot be reallocated
-      there.
+      `onSampleRateChange`. A tape's bytes depend on the rate.
     - Rack offers rates up to 768 kHz, where 210 pages take 840 MiB per instance.
+    - Also considered:
+      - allocating a new tape on the UI thread and handing it over, which leaves a gap with
+        nothing recorded and needs a handover between threads;
+      - reallocating at every change, which allocates on the audio thread.
 
 ---
 
