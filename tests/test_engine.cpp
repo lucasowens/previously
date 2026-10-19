@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <random>
 #include <span>
 #include <vector>
@@ -120,6 +121,36 @@ TEST_CASE("the realtime guard detects an allocation")
     }
 
     CHECK(test::realtime_guard::violations() > 0);
+}
+
+TEST_CASE("the realtime guard counts nothrow and over-aligned allocations, once each")
+{
+    // Called directly, as a new-expression would call them: an allocation a compiler may not
+    // leave out. Each is freed by the delete that matches it.
+    constexpr auto cache_line = std::align_val_t{64};
+
+    test::realtime_guard::reset_violations();
+    {
+        const test::realtime_guard guard;
+
+        void* const single         = ::operator new(16, std::nothrow);
+        void* const array          = ::operator new[](16, std::nothrow);
+        void* const aligned        = ::operator new(64, cache_line);
+        void* const aligned_array  = ::operator new[](64, cache_line);
+        void* const aligned_single = ::operator new(64, cache_line, std::nothrow);
+        void* const aligned_many   = ::operator new[](64, cache_line, std::nothrow);
+
+        CHECK(reinterpret_cast<std::uintptr_t>(aligned) % 64 == 0);  // NOLINT(*-reinterpret-cast)
+
+        ::operator delete(single, std::nothrow);
+        ::operator delete[](array, std::nothrow);
+        ::operator delete(aligned, cache_line);
+        ::operator delete[](aligned_array, cache_line);
+        ::operator delete(aligned_single, cache_line, std::nothrow);
+        ::operator delete[](aligned_many, cache_line, std::nothrow);
+    }
+
+    CHECK(test::realtime_guard::violations() == 6U);
 }
 
 }  // namespace

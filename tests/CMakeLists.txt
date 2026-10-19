@@ -36,6 +36,12 @@ previously_apply_strict_options(previously_tests)
 
 add_test(NAME unit COMMAND previously_tests)
 
+# ASan checks that each block is freed by the allocator that made it, but leaves that check off on
+# macOS. It is on here, so a mismatch fails the macOS gate as it fails Linux CI.
+if(PREVIOUSLY_SANITIZE)
+    set_tests_properties(unit PROPERTIES ENVIRONMENT "ASAN_OPTIONS=alloc_dealloc_mismatch=1")
+endif()
+
 # T3: golden render regression. Renders every stimulus in golden/stimulus and compares the result
 # byte-for-byte with golden/expected. `cmake --build <dir> --target bless` approves new output.
 set(golden_args
