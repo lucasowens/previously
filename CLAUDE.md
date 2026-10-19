@@ -18,7 +18,9 @@ Read [docs/DESIGN.md](docs/DESIGN.md) (spec and roadmap, §14 has the P1 progres
 | `make bless` | Approve new golden renders. Only after the change is understood. |
 
 Test binary: `build/dev/tests/previously_tests` (doctest; `-tc="name*"` filters). The pre-commit
-hook runs the format check and the host tests.
+hook runs the format check and the host tests. Run directly, the binary misses ASan's
+alloc-dealloc check, which macOS leaves off: `ctest` turns it on, as does
+`ASAN_OPTIONS=alloc_dealloc_mismatch=1`.
 
 ## Workflow
 
