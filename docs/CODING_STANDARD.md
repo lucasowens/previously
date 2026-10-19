@@ -360,6 +360,7 @@ Every suppression in the codebase, with its justification:
 | `engine/src/engine.cpp` | `readability-trivial-switch` | A one-case switch is kept so `-Wswitch` catches new commands |
 | `rack/src/plugin.*` | `NOLINT` on `pluginInstance`, `init` | Name, linkage and signature are dictated by the Rack SDK |
 | `rack/src/previously_module.cpp` | `*-avoid-non-const-global-variables` | Rack's model registry is a global by design |
+| `rack/src/tape.hpp` | `*-avoid-c-arrays` | `std::unique_ptr<stereo_frame[]>` owns the tape unwritten; a `std::vector` would write all 210 MiB |
 | `firmware/src/main.cpp` | `*-avoid-non-const-global-variables` | Hardware and engine are reached from the audio interrupt |
 | `firmware/src/contract_violation.cpp` | `hicpp-no-assembler` | Disabling interrupts and breakpoints need inline assembly |
 | `tests/.clang-tidy` | Six test-only checks | Each one is listed with its reason in the file |

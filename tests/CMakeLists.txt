@@ -20,6 +20,7 @@ add_executable(previously_tests
     test_engine_tape.cpp
     test_wav.cpp
     test_block_adapter.cpp
+    test_rack_tape.cpp
 )
 
 target_link_libraries(previously_tests PRIVATE
