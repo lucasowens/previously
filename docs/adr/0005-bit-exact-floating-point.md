@@ -65,8 +65,11 @@ invariant promises "no denormals".
   tests and the firmware compute the same thing.
 - The M7 loses automatic FMA in DSP loops. The cost is measured in T5, which is deferred with the
   hardware work. If it matters, explicit `std::fma` recovers it where results stay identical.
-- Tests guard each rule:
-  - a test pins the exact bits of one crossfade sample, so a build that drops the flag fails on
-    arm64;
-  - T2 asserts that no subnormal appears in rendered output or engine state, including after a
-    signal followed by long silence.
+- Tests guard each rule (`test_dc_blocker.cpp`; the crossfade gets the same when it lands):
+  - a test pins the exact bits of one DC-blocker output, so a build that drops the flag fails on
+    arm64. Its input, 0.1 and then silence, cancels almost exactly, so the fused result is
+    205 ulps away, not one;
+  - the DC blocker runs through a minute of silence after full scale with no subnormal in its
+    output, and settles to exactly zero;
+  - the same input, with subnormal and near-floor values added, gives identical bits with
+    flush-to-zero on (as Rack sets it) and off.

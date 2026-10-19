@@ -7,6 +7,7 @@
 
 #include "previously/clock_tracker.hpp"
 
+#include "known.hpp"
 #include "realtime_guard.hpp"
 
 #include <doctest/doctest.h>
@@ -24,6 +25,8 @@
 
 namespace previously {
 namespace {
+
+using test::known;
 
 constexpr sample_rate rate_48k{48'000U};
 constexpr double      samples_per_beat_120_bpm = 24'000.0;                         // 48 kHz
@@ -61,15 +64,6 @@ struct tracked_clock {
     return (static_cast<double>(estimate.ticks()) /
             static_cast<double>(sample_time::ticks_per_sample)) -
            truth;
-}
-
-/// The value inside an optional the test expects to be present. A missing value fails the test
-/// (REQUIRE) instead of being dereferenced.
-template <typename T>
-[[nodiscard]] T known(const std::optional<T>& maybe)
-{
-    REQUIRE(maybe.has_value());
-    return maybe.value_or(T{});
 }
 
 /// True pulse times of a steady clock.

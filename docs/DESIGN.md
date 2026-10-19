@@ -109,20 +109,35 @@ time slice, to leave headroom for interrupt jitter and UI work.
 48 kHz × 2 channels × 4 bytes (float32) = **384,000 bytes per second**. 64 MiB therefore holds
 about **174 s** of stereo audio in total.
 
-**Paged tape** (P1, planned; ADR 0004). All loop audio lives in one pool of fixed-size **pages**.
-Audio is never copied; loops hold pages:
+**Paged tape** (ADR 0004). All loop audio lives in one pool of fixed-size **pages**. Audio is
+never copied; loops hold pages. The pool and the recorder are built (`page_pool`, `recorder`);
+loops and captures come with capture (§3.4).
 
-- **A page** is the smallest power-of-two number of stereo frames that lasts at least 0.6827 s:
+- **A page** is the smallest power-of-two number of stereo frames that lasts at least as long as
+  2¹⁵ frames at 48 kHz (0.68267 s):
   - 2¹⁵ frames (256 KiB of float32) at 44.1 and 48 kHz;
   - 2¹⁶ at 88.2 and 96 kHz;
   - 2¹⁷ at 176.4 and 192 kHz.
 
-  Every page count below is therefore its 48 kHz value or less, at any sample rate; only the bytes
-  per page change. A position inside a page is a shift and a mask.
-- **The recorder** writes the input into pages without pause. It takes a free page whenever the
+  `page_frames_for()` computes it in integers, as the smallest power of two P with
+  P × 48,000 ≥ 2¹⁵ × rate, so no rounding can move a boundary. Every page count below is therefore
+  its 48 kHz value or less, at any sample rate; only the bytes per page change. A position inside
+  a page is a shift and a mask.
+- **A frame** is stored as its two channels side by side, so one read fetches both.
+- **The recorder** writes the input into pages without pause, through the DC blocker (§5.5): the
+  frame the engine receives at sample n is at position n. It takes a free page whenever the
   current one fills, and gives a page back once it is older than the history and no loop holds it.
+  - **Page n and page n − 46 share a slot** in the recorder's ring, so the old page goes back
+    before the new one is taken. The recorder never holds more than the history.
+  - **A page is free whenever one is needed.** The pool has at least the history's pages, the
+    recorder is today their only holder, and captures will be admitted only while that stays
+    true. Should the pool be empty all the same, that page goes unrecorded and recording resumes
+    on the next. The history has a hole; no loop's audio is touched. The DC blocker runs on
+    through the hole, so what is recorded after it is unchanged.
 - **A loop** holds the ids of the pages its window touches, with a reference count on each. When
   the loop goes, its pages go back to the pool.
+  - Each page counts its holders: the history is one, and each capture or loop another.
+  - Free pages wait on a stack, so taking and returning a page are O(1).
 
 | SDRAM | Size | Role |
 |---|---|---|
@@ -159,11 +174,16 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
   therefore never runs out, and the history is never interrupted, however many loops exist.
 - P1 needs at most 3 × 47 + 46 = 187 pages: two slots, one of them being replaced, with one
   capture in flight at a time (§3.4). P2's four slots and undo need a policy (§15).
-- Because pages scale with the sample rate, these counts hold on every target. The host and Rack
-  size the pool in bytes for their rate: at 96 kHz each page is 512 KiB.
+- Because pages scale with the sample rate, these counts hold on every target. A host sizes the
+  pool in bytes for its rate: at 96 kHz each page is 512 KiB.
+- **Who gives the engine a tape.** Today, only the tests. Rack and the firmware pass none, and
+  record nothing, until the Rack controls (§14) and the hardware work. Rack can change the sample
+  rate on its audio thread, where a tape cannot be reallocated (§15, question 10).
 - The engine never touches the pool before its first `process()`. On the Daisy, SDRAM is
-  configured inside `hardware.Init()`, after static constructors have run.
-- These numbers become `static_assert`s with the implementation.
+  configured inside `hardware.Init()`, after static constructors have run. A test fills a tape
+  with a pattern, constructs the engine, and checks the pattern is intact.
+- The counts are `static_assert`s: 3 × 47 + 46 ≤ 210 in `engine.hpp`, and the page sizes in the
+  tests.
 
 **Precision rule:** absolute time is **never stored in a float**. A float has a 24-bit mantissa,
 so it stops resolving individual samples after 2²⁴ samples (about 350 s at 48 kHz). Positions are
@@ -177,12 +197,23 @@ build links with, so the budget follows the layout.
 | Stage | Flash used | Mostly |
 |---|---|---|
 | P0 passthrough | 61% | libDaisy and newlib |
-| With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code at `-O3` with LTO |
+| With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code, unoptimized (below) |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
+| With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
 toolchain's paths: CI builds the same commit 340 bytes larger.
+
+**The engine is built without optimization in the firmware** (found in PR #10, issue #11).
+libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options`, which reaches
+only targets defined after it in the firmware's directory. The engine is added before it, and the
+toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
+- **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
+  scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it.
+- **Speed.** The engine's speed on the device would not be representative until it is fixed.
+- **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
+- **Order of remedies.** Fixing this comes before `-Os` in the steps below.
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
@@ -205,8 +236,9 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 80,404 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (26,008 bytes, 24,768 of them the clock history).
+- **Today** they take 81,420 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (26,816 bytes: 24,768 of them the clock history, and 808 the pool's and the
+  recorder's bookkeeping).
 - **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
   LTO, summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
   start-up.
@@ -216,6 +248,8 @@ Budget items so far:
 | Item | Size | Note |
 |---|---|---|
 | Clock tracker history | 16 bytes and 1 bit × capacity | The owner provides it (`clock_history`): each pulse's filtered time, its raw edge and a fill-in flag. 256 entries (4 KB and 32 bytes) cover 16 bars at 4 PPQN. The engine's 1,536 (24 KB and 192 bytes) cover 16 bars at 24 PPQN. |
+| Page pool | 3 bytes per page: 630 bytes | A free stack of 2-byte page ids and a 1-byte holder count, for each of the 210 pages |
+| Recorder | 2 bytes per history page: 92 bytes | The history's page ids, beside two DC blockers |
 | Loop page tables (P1, planned) | 2 bytes per page | At most 47 pages per loop |
 
 The firmware owner places these buffers explicitly.
@@ -926,8 +960,17 @@ equal-power when they are not, or a blend.
 - Inputs pass through a **DC blocker** (about 5 Hz one-pole high-pass) *before* recording. P1
   puts it on the record path only. The live path stays a bit-exact passthrough until the mixer
   gives it the same blocker.
-  - Its state snaps to exactly zero below 2⁻⁵⁰ (−301 dBFS). Fed silence, a 5 Hz one-pole goes
-    subnormal after 2.78 s and stays there; with the snap it never does (ADR 0005).
+  - It is y[n] = x[n] − x[n−1] + r·y[n−1], with r = 1 − 2π × 5 Hz / rate. The coefficient uses
+    only +, −, × and ÷, so every target computes the same bits (ADR 0005).
+  - Measured at 48 kHz: −3.01 dB at 5 Hz, −0.26 dB at 20 Hz and +0.003 dB at 1 kHz. A full-scale
+    offset is exactly zero after 52,934 samples (1.10 s).
+  - Its state snaps to exactly zero below 2⁻⁵⁰ (−301 dBFS), and its input is flushed the same
+    way. Fed silence after full scale, a 5 Hz one-pole goes subnormal after 2.78 s and stays
+    there; with the snap it never does (ADR 0005).
+  - A NaN or an infinity is flushed the same way, in the input and in the state. Unflushed, one
+    stays in the state for ever, and every frame recorded after it is NaN. A Rack module
+    upstream can send one, and finite input can overflow into one: the largest float minus its
+    negative is infinite.
 
 ### 5.6 How it is verified
 
@@ -1173,13 +1216,15 @@ confidence, but nothing performance-critical depends on it.
       Output is therefore identical at any block size, given the same edges and the same times
       at which commands are applied. Commands apply at block starts, so where a command takes
       effect does depend on the block size.
-- **Memory (P1, planned):** the engine receives one memory region (SDRAM on device, a heap block
-  on host) at construction and carves it into pages (§2.3).
+- **Memory:** the engine receives one memory region at construction, a
+  `std::span<stereo_frame>` (SDRAM on device, a heap block on host), and carves it into pages
+  (§2.3). `history()` reads back what the recorder has kept.
   - **Nothing is allocated after construction**, and the region is not touched before the first
     `process()`.
-  - Without a region, captures are refused and the engine behaves as it does today.
-  - Members are declared so the pool outlives every loop that holds pages. The pool's destructor
-    expects every count to be zero.
+  - Without a region nothing is recorded, captures will be refused, and the engine otherwise
+    behaves as before.
+  - Members are declared so the pool outlives everything that holds its pages. The pool's
+    destructor expects every count to be zero, and the recorder's gives its pages back.
 - **Strong unit types:** `samples`, `beats`, `seconds` and `ratio` are distinct types, so mixing
   them does not compile.
 
@@ -1357,7 +1402,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); next, the paged tape, recorder, DC blocker and `-ffp-contract=off`; then capture and playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only); next, capture and playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
@@ -1404,6 +1449,12 @@ Schematic, PCB, panel, cue codec and SD save/load.
    more frequent moves. To be measured in Rack.
 9. **MIDI clock and the bar-line estimate (§3.4).** Jittery sources need their own tolerance,
    and smoothing.
+10. **Rack's tape and sample-rate changes (§2.3).** To decide before the Rack controls.
+    - Rack can change the rate on its audio thread: the Audio module calls
+      `setSuggestedSampleRate` from `processInput`, and the plugin rebuilds its engine in
+      `onSampleRateChange`. A tape's bytes depend on the rate, and it cannot be reallocated
+      there.
+    - Rack offers rates up to 768 kHz, where 210 pages take 840 MiB per instance.
 
 ---
 

@@ -38,3 +38,12 @@ endfunction()
 function(previously_apply_embedded_subset target)
     target_compile_options(${target} PRIVATE -fno-exceptions -fno-rtti)
 endfunction()
+
+# Every multiply and add rounds on its own, so the engine computes the same bits on every target
+# (ADR 0005). Clang and GCC otherwise fuse them where the CPU has an FMA instruction: arm64 and the
+# Cortex-M7 do, and baseline x86-64 does not. PUBLIC, so engine code inlined into a consumer
+# follows the same rule. The Rack plugin compiles its own files with Rack's flags, which is why
+# rendered arithmetic lives in the engine's .cpp files (CODING_STANDARD §3.13).
+function(previously_apply_float_rules target)
+    target_compile_options(${target} PUBLIC -ffp-contract=off)
+endfunction()
