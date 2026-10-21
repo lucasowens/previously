@@ -363,4 +363,5 @@ Every suppression in the codebase, with its justification:
 | `rack/src/tape.hpp` | `*-avoid-c-arrays` | `std::unique_ptr<stereo_frame[]>` owns the tape unwritten; a `std::vector` would write all 210 MiB |
 | `firmware/src/main.cpp` | `*-avoid-non-const-global-variables` | Hardware and engine are reached from the audio interrupt |
 | `firmware/src/contract_violation.cpp` | `hicpp-no-assembler` | Disabling interrupts and breakpoints need inline assembly |
+| `tests/sanitizer_options.cpp` | `bugprone-reserved-identifier`, `readability-identifier-naming` | `__asan_default_options` is the name ASan looks up at start-up |
 | `tests/.clang-tidy` | Six test-only checks | Each one is listed with its reason in the file |
