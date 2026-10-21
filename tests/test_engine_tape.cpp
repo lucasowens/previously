@@ -11,14 +11,13 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <span>
 #include <vector>
 
 namespace previously {
 namespace {
 
+using test::engine_feed;
 using test::same_bits;
-using test::stereo_noise;
 
 constexpr sample_rate rate_48k{48'000U};
 
@@ -34,35 +33,6 @@ std::vector<stereo_frame> tape_for(sample_rate rate)
 
     return std::vector<stereo_frame>(engine::history_pages * page_frames);
 }
-
-/// The shared noise, fed to an engine block by block, and the engine's output.
-struct engine_feed {
-    stereo_noise       input;
-    std::vector<float> out_left;
-    std::vector<float> out_right;
-
-    engine_feed(std::size_t frames, sample_rate rate)
-        : input{frames, rate},
-          out_left(frames),
-          out_right(frames)
-    {
-    }
-
-    /// Feeds frames [from, to) in blocks of `block_frames`.
-    void process(engine& target, std::size_t from, std::size_t to, std::size_t block_frames)
-    {
-        for (std::size_t start = from; start < to; start += block_frames) {
-            const std::size_t count = std::min(block_frames, to - start);
-
-            target.process(audio_block{
-                .in_left   = std::span{input.left}.subspan(start, count),
-                .in_right  = std::span{input.right}.subspan(start, count),
-                .out_left  = std::span{out_left}.subspan(start, count),
-                .out_right = std::span{out_right}.subspan(start, count),
-            });
-        }
-    }
-};
 
 TEST_CASE("without a tape, the engine records nothing")
 {

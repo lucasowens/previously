@@ -11,20 +11,18 @@
 
 #include <doctest/doctest.h>
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
-#include <vector>
 
 namespace previously::vcv {
 namespace {
 
+using test::engine_feed;
 using test::known;
 using test::same_bits;
-using test::stereo_noise;
 
 constexpr std::size_t block = block_adapter::block_frames;
 
@@ -49,23 +47,6 @@ constexpr std::array<std::uint32_t, 14> rack_rates_hz{
     705'600U,
     768'000U,
 };
-
-/// Feeds an engine `frames` of the noise, from position `from`, in the adapter's blocks.
-void record(engine& target, const stereo_noise& noise, std::size_t from, std::size_t frames)
-{
-    std::vector<float> out(block);
-
-    for (std::size_t start = from; start < from + frames; start += block) {
-        const std::size_t count = std::min(block, from + frames - start);
-
-        target.process(audio_block{
-            .in_left   = std::span{noise.left}.subspan(start, count),
-            .in_right  = std::span{noise.right}.subspan(start, count),
-            .out_left  = std::span{out}.first(count),
-            .out_right = std::span{out}.first(count),
-        });
-    }
-}
 
 TEST_CASE("a full tape holds the history at every rate Rack offers, and not beyond")
 {
@@ -98,18 +79,18 @@ TEST_CASE("an engine is rebuilt over the same tape when the rate changes, and re
 {
     tape                          memory;
     std::optional<engine>         audio_engine;
-    const stereo_noise            at_48k{4'800, sample_rate{48'000U}};
-    const stereo_noise            at_96k{9'600, sample_rate{96'000U}};
+    engine_feed                   at_48k{4'800, sample_rate{48'000U}};
+    engine_feed                   at_96k{9'600, sample_rate{96'000U}};
     const std::span<stereo_frame> first = memory.for_rate(sample_rate{48'000U});
 
     REQUIRE(first.size() == tape::full_frames);
 
     audio_engine.emplace(engine_config{.rate = sample_rate{48'000U}, .max_block_frames = block},
                          first);
-    record(*audio_engine, at_48k, 0, 4'800);
+    at_48k.process(*audio_engine, 0, 4'800, block);
 
     CHECK(same_bits(known(audio_engine->history().frame_at(samples{4'799})),
-                    at_48k.dc_blocked[4'799]));
+                    at_48k.input.dc_blocked[4'799]));
 
     // The rate changes, as Rack changes it on its audio thread: the engine is rebuilt in place
     // over the same memory, allocating nothing. The history starts again, with the noise
@@ -127,12 +108,13 @@ TEST_CASE("an engine is rebuilt over the same tape when the rate changes, and re
 
     CHECK(test::realtime_guard::violations() == 0U);
 
-    record(*audio_engine, at_96k, 0, 9'600);
+    at_96k.process(*audio_engine, 0, 9'600, block);
 
     CHECK(audio_engine->history().end() == samples{9'600});
-    CHECK(same_bits(known(audio_engine->history().frame_at(samples{0})), at_96k.dc_blocked[0]));
+    CHECK(
+        same_bits(known(audio_engine->history().frame_at(samples{0})), at_96k.input.dc_blocked[0]));
     CHECK(same_bits(known(audio_engine->history().frame_at(samples{9'599})),
-                    at_96k.dc_blocked[9'599]));
+                    at_96k.input.dc_blocked[9'599]));
 }
 
 TEST_CASE("at 768 kHz an engine takes the full tape, with fewer and longer pages")
@@ -142,8 +124,8 @@ TEST_CASE("at 768 kHz an engine takes the full tape, with fewer and longer pages
     engine audio_engine{engine_config{.rate = sample_rate{768'000U}, .max_block_frames = block},
                         memory.for_rate(sample_rate{768'000U})};
 
-    const stereo_noise noise{524'289, sample_rate{768'000U}};
-    record(audio_engine, noise, 0, 524'289);
+    engine_feed feed{524'289, sample_rate{768'000U}};
+    feed.process(audio_engine, 0, 524'289, block);
 
     // The first frame of the second page: a page is 2^19 frames at this rate.
     CHECK(audio_engine.history().page_at(samples{524'287}) ==
@@ -151,7 +133,7 @@ TEST_CASE("at 768 kHz an engine takes the full tape, with fewer and longer pages
     CHECK(audio_engine.history().page_at(samples{524'288}) !=
           audio_engine.history().page_at(samples{0}));
     CHECK(same_bits(known(audio_engine.history().frame_at(samples{524'288})),
-                    noise.dc_blocked[524'288]));
+                    feed.input.dc_blocked[524'288]));
 }
 
 }  // namespace
