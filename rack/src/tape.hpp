@@ -8,10 +8,14 @@
 // 210 pages at 192 kHz, and the engine is rebuilt over the same memory at every rate (DESIGN.md
 // §15, question 10).
 //
-// The memory is not written when it is allocated, so it costs address space, not RAM, until the
-// recorder writes it. Measured on macOS: allocating 210 MiB took under 10 µs and added no resident
-// memory; 46 pages written at 48 kHz added 11.5 MiB. Above 192 kHz the same memory holds fewer
-// pages, 105 at 384 kHz and 52 at 768 kHz, which still hold the whole history.
+// The memory is not written when it is allocated, so a fresh tape costs address space, not RAM,
+// until the recorder writes it. Measured on macOS: allocating 210 MiB took under 10 µs and added
+// no resident memory; 46 pages written at 48 kHz added 11.5 MiB. Two things keep memory resident
+// after that (DESIGN.md §2.3): each rebuilt engine records from page 0 again, so a module stays at
+// the history's size for the highest rate it has run at, 184 MiB at 768 kHz; and on macOS a
+// deleted module's written pages stay in libmalloc's cache, and the next tape of this size takes
+// them over. Above 192 kHz the same memory holds fewer pages, 105 at 384 kHz and 52 at 768 kHz,
+// which still hold the whole history, with less room for loops.
 
 #pragma once
 

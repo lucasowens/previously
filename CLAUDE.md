@@ -100,6 +100,10 @@ however the binary is run.
   - After a slowed clock's retirement the history is shorter until new pulses overwrite the
     retired slots. From 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
     restart, and its fill-ins stay
+  - Rack's tape holds fewer pages above 192 kHz (DESIGN §2.3): 105 at 352.8 and 384 kHz, where a
+    full-length loop cannot be replaced, and 52 at 705.6 and 768 kHz, where loops get 6 pages
+    and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
+    at: 184 MiB at 768 kHz. A rate change starts the history again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
   grew.
@@ -108,6 +112,6 @@ however the binary is run.
   report the trade-off.
 - **Next:** the display (DESIGN §9.3): a UI model and a 128×64 framebuffer in the engine, shown
   on the Rack panel, starting with the clock and the recorded history. Then capture and playback
-  (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes; the
-  crossfade-bits test and the floor test through the seam correlation moved to capture and
-  playback.
+  (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes, and
+  DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
+  through the seam correlation moved to capture and playback.

@@ -174,19 +174,56 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
   therefore never runs out, and the history is never interrupted, however many loops exist.
 - P1 needs at most 3 × 47 + 46 = 187 pages: two slots, one of them being replaced, with one
   capture in flight at a time (§3.4). P2's four slots and undo need a policy (§15).
-- Because pages scale with the sample rate, these counts hold on every target. A host sizes the
-  pool in bytes for its rate: at 96 kHz each page is 512 KiB.
+- Because pages scale with the sample rate, these counts hold on every target whose tape holds
+  210 pages. A host sizes the pool in bytes for its rate: at 96 kHz each page is 512 KiB. Rack
+  sizes its tape once, for 192 kHz, and holds fewer pages above that rate (below).
 - **Who gives the engine a tape.** The tests, and Rack. The firmware passes none, and records
   nothing, until the hardware work.
   - **Rack** allocates one tape when the module is created: 210 pages at 192 kHz, 210 MiB
-    (`rack/src/tape.hpp`). It is not written when it is allocated, so it costs address space
-    rather than RAM until the recorder writes it. Measured on macOS: allocating it takes under
-    10 µs and adds no resident memory, and the 48 kHz history written adds 11.5 MiB.
+    (`rack/src/tape.hpp`). It is not written when it is allocated, so a fresh tape costs address
+    space rather than RAM until the recorder writes it. Measured on macOS: allocating it takes
+    under 10 µs and adds no resident memory, and the 48 kHz history written adds 11.5 MiB, then
+    stops: the recorder gives a page back before it takes one, so the same 46 pages are written
+    over.
+  - **Resident memory follows the highest rate the module has run at,** not the current one.
+    Each rebuilt engine records from page 0 again, over pages an earlier engine wrote, and
+    nothing gives memory back. The history is 11.5 MiB at 48 kHz, 46 MiB at 192 kHz and 184 MiB
+    at 768 kHz. Measured on macOS: 48 kHz, then 192 kHz, then 48 kHz again left 46 MiB resident.
+  - **A deleted module's written pages stay resident on macOS,** and the next tape of that size
+    takes them over: libmalloc keeps a freed block this large in its cache and hands it to the
+    next allocation of that size. Not a leak, since the block is reused, but only the first tape
+    starts unwritten. `MallocLargeCache=0` turns the cache off.
   - **A rate change** can come on Rack's audio thread (§15, question 10). The engine is rebuilt
-    over the same memory, allocating nothing. Above 192 kHz the memory holds fewer pages: 105 at
-    384 kHz and 52 at 768 kHz. That is still the whole history, with less room for captures.
-  - **Not measured:** Windows may count the whole allocation as committed memory before it is
-    written.
+    over the same memory, allocating nothing, and the history starts again from nothing. Once
+    loops exist, a rate change drops them too, since the engine that holds their pages is
+    rebuilt. What a loop should do then is for capture to decide.
+  - **Above 192 kHz** the memory holds fewer, longer pages. The history's 46 fit up to 768 kHz,
+    Rack's highest rate, but the 164 pages beyond it that P1's 187 rely on do not:
+
+    | Rate | Pool pages | Beyond the history | What fits |
+    |---|---|---|---|
+    | Up to 192 kHz | 210 | 164 | P1's 187 |
+    | 352.8, 384 kHz | 105 | 59 | One loop of any length. A second only while the two total 59 pages: two 8-bar loops from 102 BPM. Replacing a full-length loop with another is refused: 94 > 59 |
+    | 705.6, 768 kHz | 52 | 6 | Loops totalling 6 pages, which hold any span up to 5 pages: 3.41 s at 768 kHz, 3.72 s at 705.6 kHz |
+
+    At 705.6 and 768 kHz, by §3.4's reserve rule (half a period after the end line, 50 ms
+    margins), one capture fits from these tempos, in BPM at 4 PPQN in 4/4:
+
+    | Bars | 768 kHz | 705.6 kHz |
+    |---|---|---|
+    | 1 | 74.70 | 68.46 |
+    | 2 | 147.13 | 134.85 |
+    | 4 | 292.0 | 267.6 |
+    | 8 | 581.7 | 533.2 |
+
+    The 192 kHz sizing is kept because nobody performs at 768 kHz. A tape sized for it would be
+    840 MiB of address space per instance, the same resident memory at a given rate, and 840 MiB
+    of commit on Windows (below). Capture owes a test here: with 52 pages, a capture that needs 7
+    is refused and the history stays whole.
+  - **Not measured:** Windows and Linux. The Windows heap is expected to serve a block this large
+    with `VirtualAlloc(MEM_COMMIT)`, so all 210 MiB would count against the commit limit at once
+    (Private Bytes) while staying out of the working set until written; many instances would run
+    into that first. Linux with its default overcommit is expected to behave like macOS.
 - The engine never touches the pool before its first `process()`. On the Daisy, SDRAM is
   configured inside `hardware.Init()`, after static constructors have run. A test fills a tape
   with a pattern, constructs the engine, and checks the pattern is intact.
@@ -1459,7 +1496,7 @@ Schematic, PCB, panel, cue codec and SD save/load.
    and smoothing.
 10. **Rack's tape and sample-rate changes (§2.3).** Decided in PR #13: one tape per module,
     allocated when it is created and sized for 192 kHz, with the engine rebuilt over it at every
-    rate.
+    rate. A rate change starts the history again, and will drop loops once they exist (§2.3).
     - Rack can change the rate on its audio thread: the Audio module calls
       `setSuggestedSampleRate` from `processInput`, and the plugin rebuilds its engine in
       `onSampleRateChange`. A tape's bytes depend on the rate.
@@ -1467,7 +1504,11 @@ Schematic, PCB, panel, cue codec and SD save/load.
     - Also considered:
       - allocating a new tape on the UI thread and handing it over, which leaves a gap with
         nothing recorded and needs a handover between threads;
-      - reallocating at every change, which allocates on the audio thread.
+      - reallocating at every change, which allocates on the audio thread;
+      - sizing the tape for 768 kHz, so that every rate holds 210 pages: 840 MiB of address space
+        per instance, the same resident memory at a given rate, but 840 MiB of Windows commit.
+        Not taken, since nobody performs at 768 kHz; what the 192 kHz tape holds above that
+        rate is in §2.3.
 
 ---
 

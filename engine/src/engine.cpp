@@ -43,7 +43,8 @@ engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexce
 
 bool engine::holds_history(std::size_t tape_frames, sample_rate rate) noexcept
 {
-    // In 64 bits: on the M7, std::size_t could not hold the page size at the highest rates.
+    // In 64 bits: a page reaches 2^32 frames above 3,145,728,000 Hz (2^16 × 48 kHz), which
+    // sample_rate can hold and the M7's 32-bit std::size_t cannot.
     const auto page_frames = static_cast<std::uint64_t>(page_frames_for(rate).value());
     const auto whole_pages = static_cast<std::uint64_t>(tape_frames) / page_frames;
 
