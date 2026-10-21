@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <new>
 
 namespace previously::test {
@@ -46,7 +47,15 @@ void* allocate_aligned_or_null(std::size_t size, std::align_val_t alignment) noe
 {
     note_allocation();
 
-    const std::size_t align   = std::max(static_cast<std::size_t>(alignment), sizeof(void*));
+    const std::size_t align = std::max(static_cast<std::size_t>(alignment), sizeof(void*));
+
+    // A size within the alignment of the limit would wrap while it is rounded up, and ask for
+    // next to nothing. No allocator can serve it, so it fails here as libc++'s forms do. A
+    // new-expression whose size overflows relies on that: clang passes SIZE_MAX.
+    if (size > std::numeric_limits<std::size_t>::max() - (align - 1)) {
+        return nullptr;
+    }
+
     const std::size_t rounded = ((std::max(size, std::size_t{1}) + align - 1) / align) * align;
 
     return std::aligned_alloc(align, rounded);

@@ -8,8 +8,11 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <new>
 #include <random>
 #include <span>
@@ -140,7 +143,14 @@ TEST_CASE("the realtime guard counts nothrow and over-aligned allocations, once 
         void* const aligned_single = ::operator new(64, cache_line, std::nothrow);
         void* const aligned_many   = ::operator new[](64, cache_line, std::nothrow);
 
-        CHECK(reinterpret_cast<std::uintptr_t>(aligned) % 64 == 0);  // NOLINT(*-reinterpret-cast)
+        CHECK(single != nullptr);
+        CHECK(array != nullptr);
+        CHECK(std::bit_cast<std::uintptr_t>(aligned) % 64 == 0);
+        CHECK(std::bit_cast<std::uintptr_t>(aligned_array) % 64 == 0);
+        CHECK(std::bit_cast<std::uintptr_t>(aligned_single) % 64 == 0);
+        CHECK(std::bit_cast<std::uintptr_t>(aligned_many) % 64 == 0);
+        CHECK(aligned_single != nullptr);
+        CHECK(aligned_many != nullptr);
 
         ::operator delete(single, std::nothrow);
         ::operator delete[](array, std::nothrow);
@@ -153,5 +163,39 @@ TEST_CASE("the realtime guard counts nothrow and over-aligned allocations, once 
     CHECK(test::realtime_guard::violations() == 6U);
 }
 
+TEST_CASE("the aligned forms of new fail for a size that cannot be rounded up to the alignment")
+{
+    // What a new-expression passes when its size overflows: clang hands the allocator SIZE_MAX
+    // and relies on it to fail. Rounded up to a cache line that wraps to 0, which aligned_alloc
+    // would serve. Also the last size that wraps. One less would round without wrapping, and is
+    // not tried: ASan aborts on any request that large rather than failing it.
+    constexpr auto        cache_line = std::align_val_t{64};
+    constexpr std::size_t limit      = std::numeric_limits<std::size_t>::max();
+
+    // In an array rather than as literals, so no compiler can see the size and warn about it.
+    const std::array<std::size_t, 2> sizes{limit, limit - 62};
+
+    for (const std::size_t size : sizes) {
+        CAPTURE(size);
+
+        void* const single = ::operator new(size, cache_line, std::nothrow);
+        void* const array  = ::operator new[](size, cache_line, std::nothrow);
+
+        CHECK(single == nullptr);
+        CHECK(array == nullptr);
+
+        // Freed if anything came back, so a form that fails to fail does not leak as well.
+        ::operator delete(single, cache_line, std::nothrow);
+        ::operator delete[](array, cache_line, std::nothrow);
+
+        CHECK_THROWS_AS(::operator delete(::operator new(size, cache_line), cache_line),
+                        std::bad_alloc);
+
+        CHECK_THROWS_AS(::operator delete[](::operator new[](size, cache_line), cache_line),
+                        std::bad_alloc);
+    }
+}
+
 }  // namespace
+
 }  // namespace previously
