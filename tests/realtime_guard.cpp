@@ -14,6 +14,7 @@ namespace previously::test {
 namespace {
 
 thread_local int         guard_depth           = 0;
+thread_local int         failure_depth         = 0;
 thread_local std::size_t allocation_violations = 0;
 
 void note_allocation() noexcept
@@ -26,6 +27,10 @@ void note_allocation() noexcept
 void* allocate_or_null(std::size_t size) noexcept
 {
     note_allocation();
+
+    if (failure_depth > 0) {
+        return nullptr;
+    }
 
     return std::malloc(size == 0 ? 1 : size);
 }
@@ -46,6 +51,10 @@ void* allocate_or_throw(std::size_t size)
 void* allocate_aligned_or_null(std::size_t size, std::align_val_t alignment) noexcept
 {
     note_allocation();
+
+    if (failure_depth > 0) {
+        return nullptr;
+    }
 
     const std::size_t align = std::max(static_cast<std::size_t>(alignment), sizeof(void*));
 
@@ -92,6 +101,16 @@ std::size_t realtime_guard::violations() noexcept
 void realtime_guard::reset_violations() noexcept
 {
     allocation_violations = 0;
+}
+
+allocation_failure::allocation_failure() noexcept
+{
+    ++failure_depth;
+}
+
+allocation_failure::~allocation_failure()
+{
+    --failure_depth;
 }
 
 }  // namespace previously::test

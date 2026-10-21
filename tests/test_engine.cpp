@@ -114,6 +114,21 @@ TEST_CASE("process never allocates")
     CHECK(test::realtime_guard::violations() == 0);
 }
 
+/// Whether `allocate` throws std::bad_alloc. For code under an allocation_failure, where doctest's
+/// CHECK_THROWS_AS cannot run: it allocates as it reports.
+template <typename Allocate>
+[[nodiscard]] bool throws_bad_alloc(Allocate allocate)
+{
+    try {
+        allocate();
+    }
+    catch (const std::bad_alloc&) {
+        return true;
+    }
+
+    return false;
+}
+
 TEST_CASE("the realtime guard detects an allocation")
 {
     test::realtime_guard::reset_violations();
@@ -161,6 +176,69 @@ TEST_CASE("the realtime guard counts nothrow and over-aligned allocations, once 
     }
 
     CHECK(test::realtime_guard::violations() == 6U);
+}
+
+TEST_CASE("under an allocation_failure every form of new fails, and each attempt is counted")
+{
+    constexpr auto cache_line = std::align_val_t{64};
+
+    void* single         = nullptr;
+    void* array          = nullptr;
+    void* aligned_single = nullptr;
+    void* aligned_many   = nullptr;
+
+    bool plain_threw         = false;
+    bool plain_array_threw   = false;
+    bool aligned_threw       = false;
+    bool aligned_array_threw = false;
+
+    // Only the allocations under test happen inside the failure: doctest allocates as it checks.
+    test::realtime_guard::reset_violations();
+    {
+        const test::realtime_guard     guard;
+        const test::allocation_failure no_memory;
+
+        single         = ::operator new(16, std::nothrow);
+        array          = ::operator new[](16, std::nothrow);
+        aligned_single = ::operator new(64, cache_line, std::nothrow);
+        aligned_many   = ::operator new[](64, cache_line, std::nothrow);
+
+        // Each frees what it got, so a form that fails to fail does not leak as well.
+        plain_threw         = throws_bad_alloc([] {
+            ::operator delete(::operator new(16));
+        });
+        plain_array_threw   = throws_bad_alloc([] {
+            ::operator delete[](::operator new[](16));
+        });
+        aligned_threw       = throws_bad_alloc([] {
+            ::operator delete(::operator new(64, cache_line), cache_line);
+        });
+        aligned_array_threw = throws_bad_alloc([] {
+            ::operator delete[](::operator new[](64, cache_line), cache_line);
+        });
+    }
+
+    CHECK(single == nullptr);
+    CHECK(array == nullptr);
+    CHECK(aligned_single == nullptr);
+    CHECK(aligned_many == nullptr);
+    CHECK(plain_threw);
+    CHECK(plain_array_threw);
+    CHECK(aligned_threw);
+    CHECK(aligned_array_threw);
+    CHECK(test::realtime_guard::violations() == 8U);
+
+    // Freed in case anything came back, as above.
+    ::operator delete(single, std::nothrow);
+    ::operator delete[](array, std::nothrow);
+    ::operator delete(aligned_single, cache_line, std::nothrow);
+    ::operator delete[](aligned_many, cache_line, std::nothrow);
+
+    // Allocation works again once the failure has gone.
+    void* const after = ::operator new(16, std::nothrow);
+
+    CHECK(after != nullptr);
+    ::operator delete(after, std::nothrow);
 }
 
 TEST_CASE("the aligned forms of new fail for a size that cannot be rounded up to the alignment")
