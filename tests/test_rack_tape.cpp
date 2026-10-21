@@ -37,6 +37,21 @@ static_assert(!std::is_copy_assignable_v<tape>);
 static_assert(!std::is_move_constructible_v<tape>);
 static_assert(!std::is_move_assignable_v<tape>);
 
+/// How many whole pages the full tape holds at `rate`.
+constexpr std::size_t full_pages_at(sample_rate rate)
+{
+    return tape::full_frames / static_cast<std::size_t>(page_frames_for(rate).value());
+}
+
+// Above 192 kHz the same memory holds fewer, longer pages: still the history's 46 up to 768 kHz,
+// and not beyond, where a page is 2^20 frames (DESIGN.md §2.3).
+static_assert(full_pages_at(sample_rate{192'000U}) == 210);
+static_assert(full_pages_at(sample_rate{352'800U}) == 105);
+static_assert(full_pages_at(sample_rate{384'000U}) == 105);
+static_assert(full_pages_at(sample_rate{705'600U}) == 52);
+static_assert(full_pages_at(sample_rate{768'000U}) == 52);
+static_assert(full_pages_at(sample_rate{768'001U}) == 26);
+
 /// Every rate Rack's engine menu offers: 44.1 and 48 kHz times 1/4 to 16.
 constexpr std::array<std::uint32_t, 14> rack_rates_hz{
     11'025U,
@@ -80,6 +95,30 @@ TEST_CASE(
 
     // At 96 kHz pages are twice as long, so the same memory holds half the history.
     CHECK(exact.for_rate(sample_rate{96'000U}).empty());
+}
+
+TEST_CASE("a tape whose allocation failed is empty, and an engine given it records nothing")
+{
+    // The failure covers the tape's one allocation and nothing else.
+    std::optional<tape> none;
+    {
+        const test::allocation_failure no_memory;
+        none.emplace();
+    }
+
+    const std::span<stereo_frame> nothing = none->for_rate(sample_rate{48'000U});
+
+    REQUIRE(nothing.empty());
+
+    engine      audio_engine{engine_config{.rate = sample_rate{48'000U}, .max_block_frames = block},
+                             nothing};
+    engine_feed feed{1'000, sample_rate{48'000U}};
+
+    feed.process(audio_engine, 0, 1'000, block);
+
+    CHECK(audio_engine.history().end() == samples{1'000});
+    CHECK_FALSE(audio_engine.history().frame_at(samples{0}).has_value());
+    CHECK_FALSE(audio_engine.history().frame_at(samples{999}).has_value());
 }
 
 TEST_CASE("an engine is rebuilt over the same tape when the rate changes, and records at once")
@@ -126,10 +165,14 @@ TEST_CASE("an engine is rebuilt over the same tape when the rate changes, and re
 
 TEST_CASE("at 768 kHz an engine takes the full tape, with fewer and longer pages")
 {
-    // 52 pages of 2^19 frames: the history's 46 and six more.
-    tape   memory;
+    // 52 pages of 2^19 frames (the static_assert above): the history's 46 and six more.
+    tape                          memory;
+    const std::span<stereo_frame> whole = memory.for_rate(sample_rate{768'000U});
+
+    REQUIRE(whole.size() == tape::full_frames);
+
     engine audio_engine{engine_config{.rate = sample_rate{768'000U}, .max_block_frames = block},
-                        memory.for_rate(sample_rate{768'000U})};
+                        whole};
 
     engine_feed feed{524'289, sample_rate{768'000U}};
     feed.process(audio_engine, 0, 524'289, block);
