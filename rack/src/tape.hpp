@@ -44,6 +44,16 @@ public:
     {
     }
 
+    ~tape() = default;
+
+    // An engine holds a span into the tape, so a tape stays where it is. A moved-from tape would
+    // also keep its frame count with no memory behind it, and hand out a null span that claims
+    // every frame.
+    tape(const tape&)            = delete;
+    tape& operator=(const tape&) = delete;
+    tape(tape&&)                 = delete;
+    tape& operator=(tape&&)      = delete;
+
     /// The memory for an engine at `rate`: all of it, or none when it cannot hold the history at
     /// that rate. A full tape holds it at every rate Rack offers, up to 768 kHz.
     [[nodiscard]] std::span<stereo_frame> for_rate(sample_rate rate) noexcept

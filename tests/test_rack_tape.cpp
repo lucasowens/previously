@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <type_traits>
 
 namespace previously::vcv {
 namespace {
@@ -29,6 +30,12 @@ constexpr std::size_t block = block_adapter::block_frames;
 // 210 pages of 2^17 frames, 8 bytes each: 210 MiB.
 static_assert(tape::full_frames == std::size_t{210} * 131'072);
 static_assert(tape::full_frames * sizeof(stereo_frame) == std::size_t{210} * 1024 * 1024);
+
+// An engine holds a span into a tape, so a tape stays where it is.
+static_assert(!std::is_copy_constructible_v<tape>);
+static_assert(!std::is_copy_assignable_v<tape>);
+static_assert(!std::is_move_constructible_v<tape>);
+static_assert(!std::is_move_assignable_v<tape>);
 
 /// Every rate Rack's engine menu offers: 44.1 and 48 kHz times 1/4 to 16.
 constexpr std::array<std::uint32_t, 14> rack_rates_hz{
