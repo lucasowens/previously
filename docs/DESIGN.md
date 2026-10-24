@@ -640,7 +640,20 @@ step 4 cannot repair it and the edge is kept, at its own error:
   samples on +20% over 2 bars;
 - a slipped edge on the first few pulses after a tempo step, while the step still splits the
   left side's edges (measured on the first and the third pulse after it): the sides are the
-  step apart.
+  step apart;
+- a hiccup smaller than the tracker's outlier threshold, a quarter period, with the clock
+  stopping before enough real pulses follow it. The tracker takes such a hiccup into its phase
+  and period, so the fill-ins after the stop carry it, and the sides disagree in slope.
+  - **Fewer than three real pulses after the line:** every hiccup is kept.
+  - **Three:** hiccups up to 600 samples are repaired, to within 5% of their size (600 lands 29.5
+    off), and those of 1,000 or more are kept.
+  - **Four:** every hiccup is repaired, to within 3.3 samples. **Five or more:** within 0.01.
+  - **A hiccup of a quarter period or more** is an outlier. The tracker leaves it out of its
+    filter, so its fill-ins stay on the old grid, and it is repaired however soon the clock
+    stops.
+
+  Measured from 2 to 1,499 samples. Keeping is right: the fill-ins are the grid a capture cuts
+  on.
 
 The correction term in step 4 adds two of its own. Each keeps an edge rather than risk moving
 a good one:
@@ -710,7 +723,13 @@ The other notes:
     repaired lines are within 0.005.
   - Every threshold just either side and at equality: 1 sample, half a period, 64 samples, twice
     the spread, 4 and 20 *σ̂*, 16 values and 8 edges. Each mechanism has a test that fails
-    without it: 23 mutations, all caught.
+    without it: 25 mutations, all caught.
+  - *σ̂* and *c_within* exact at any tempo: the same *σ̂* at periods of 6,000, 36,000 and 192,000
+    samples with a ×2 or ×0.5 change 2 pulses before the line, and *c_within* exact on a
+    parabola with its residuals at half the period.
+  - A hiccup and then a stop, through the tracker (the limit above): 1,499 samples kept with 2 or
+    3 real pulses after the line and repaired with 4; 1,501 repaired with 2, 3 or 4; 600
+    repaired with 3, to within 30.
   - The seeded properties at the review's counts: the jitter table's rows at 50,000 seeds, the 21
     step cells and the 9 never-worse families at 20,000, *σ̂*'s tail at 50,000, and the fill-in
     measurements. They take about a minute under the sanitizers and 5 seconds optimized, so they

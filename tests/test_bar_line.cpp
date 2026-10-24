@@ -601,6 +601,60 @@ TEST_CASE("the curvature within the sides is exact at any tempo")
 
 // Through the tracker.
 
+TEST_CASE("a hiccup under the outlier threshold, then a stop, is kept until enough real pulses "
+          "follow it")
+{
+    // A quarter period is 1,500 samples. The tracker takes a smaller hiccup into its phase and
+    // period, so the fill-ins after the clock stops carry it, and the sides disagree; an outlier
+    // stays out of the filter, its fill-ins keep the old grid, and it is repaired at any stop.
+    // `stop` is the last real pulse; the line is pulse 112. Measured: 1,499 samples repaired to
+    // 3.3 after a stop at 116; 600 samples to 29.5 after a stop at 115.
+    struct cell {
+        double hiccup;
+        int    stop;
+        bool   repaired;
+        double within;  // samples, when repaired
+    };
+
+    for (const cell& tried : {
+             cell{.hiccup = 1'499.0, .stop = 114, .repaired = false, .within = 0.0},
+             cell{.hiccup = 1'499.0, .stop = 115, .repaired = false, .within = 0.0},
+             cell{.hiccup = 1'499.0, .stop = 116, .repaired = true, .within = 5.0},
+             cell{.hiccup = 1'501.0, .stop = 114, .repaired = true, .within = 0.02},
+             cell{.hiccup = 1'501.0, .stop = 115, .repaired = true, .within = 0.02},
+             cell{.hiccup = 1'501.0, .stop = 116, .repaired = true, .within = 0.02},
+             cell{.hiccup = 600.0, .stop = 115, .repaired = true, .within = 30.0},
+         }) {
+        CAPTURE(tried.hiccup);
+        CAPTURE(tried.stop);
+
+        planted_clock clock = test::steady(1);
+
+        clock.raw[static_cast<std::size_t>(planted_line)] += tried.hiccup;
+
+        clock_history<256> history{};
+        clock_tracker      tracker{clock_tracker_config::gate(rate_48k), history};
+
+        for (int j = 0; j < test::clock_pulses; ++j) {
+            if (j <= tried.stop) {
+                tracker.pulse(to_time(clock.raw[static_cast<std::size_t>(j)]));
+            }
+
+            tracker.advance(to_time(clock.truth[static_cast<std::size_t>(j)] + 1.0));
+        }
+
+        const line_estimate estimate = test::known(estimate_line(tracker, planted_line));
+
+        if (tried.repaired) {
+            CHECK(estimate.basis == line_basis::repaired);
+            CHECK(error_at_line(clock, estimate) <= tried.within);
+        }
+        else {
+            CHECK(estimate.time == to_time(clock.raw[static_cast<std::size_t>(planted_line)]));
+        }
+    }
+}
+
 TEST_CASE("a line is final once its edge and the 8 pulses after it are recorded, and not before")
 {
     const planted_clock clock = test::steady(1);
