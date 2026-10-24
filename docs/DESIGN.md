@@ -245,6 +245,7 @@ build links with, so the budget follows the layout.
 | With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code, unoptimized (below) |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
+| With the history's peaks and the UI model (§9.3) | 88% (115,644 bytes) | 6,772 bytes more unoptimized; 4,016 at `-O3` with LTO |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -255,7 +256,9 @@ libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options
 only targets defined after it in the firmware's directory. The engine is added before it, and the
 toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
 - **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
-  scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it.
+  scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it. The
+  history's peaks and the UI model take it to 79,332 bytes (61%): 4,016 more than the commit before
+  them, built in the same scratch tree.
 - **Speed.** The engine's speed on the device would not be representative until it is fixed.
 - **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
 - **Order of remedies.** Fixing this comes before `-Os` in the steps below.
@@ -281,9 +284,9 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 81,420 bytes (70%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (26,816 bytes: 24,768 of them the clock history, and 808 the pool's and the
-  recorder's bookkeeping).
+- **Today** they take 84,860 bytes (73%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (30,248 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 472 the
+  UI model, and 824 the pool's and the recorder's other bookkeeping).
 - **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
   LTO, summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
   start-up.
@@ -295,6 +298,8 @@ Budget items so far:
 | Clock tracker history | 16 bytes and 1 bit × capacity | The owner provides it (`clock_history`): each pulse's filtered time, its raw edge and a fill-in flag. 256 entries (4 KB and 32 bytes) cover 16 bars at 4 PPQN. The engine's 1,536 (24 KB and 192 bytes) cover 16 bars at 24 PPQN. |
 | Page pool | 3 bytes per page: 630 bytes | A free stack of 2-byte page ids and a 1-byte holder count, for each of the 210 pages |
 | Recorder | 2 bytes per history page: 92 bytes | The history's page ids, beside two DC blockers |
+| History peaks | 2 bytes per bucket: 2,944 bytes | A level for each channel of each of the history's 1,472 buckets (§9.3) |
+| UI model | 472 bytes | What the display shows: the clock, and 128 columns of 3 bytes (§9.3) |
 | Loop page tables (P1, planned) | 2 bytes per page | At most 47 pages per loop |
 
 The firmware owner places these buffers explicitly.
@@ -1204,6 +1209,68 @@ confidence, but nothing performance-critical depends on it.
 - The Pod's header exposes SPI, so a display can be trialled on the Pod.
 - Panel variant vs. header-mounted option is decided in P4 (§15).
 
+**The display, as built.** In three PRs: the UI model (PR #14), the renderer and its golden
+images, then Rack's panel. The screen has a header line, and a **history strip** below it.
+
+- **The header:** the clock's state, the tempo, and the bar and beat in progress.
+- **The strip, once the grid has a tempo: bars.** The last 4 whole bars and the bar in progress,
+  in five slots starting at columns 0, 25, 51, 76 and 102. The 4 whole bars are what a 4-bar
+  capture takes when pressed now (§3.4), so the strip answers "if I press now, what do I get?".
+  - The bar in progress fills its slot from the left. When it ends, the strip moves on a bar.
+  - Every bar fills its slot, whatever its length, so a change of tempo squeezes none off the
+    screen. A column starts at the first frame at or after its share of the bar.
+  - Just after the clock starts, the earliest slots hold bars from before it, which the grid
+    cannot place. They stay empty.
+  - At slow tempos the 5 bars reach back past the history, and what is older shows nothing. The
+    history always holds at least 30.72 s at 48 kHz, so all 5 bars from 39.1 BPM up.
+
+  At 120 BPM in 4/4 a bar is 2 s, 77 to 80 ms a column. Drums alone until bar 17, then a 2-bar
+  riff, and it is now 0.5 s into bar 21:
+
+  ```
+  slot      0          1          2          3          4
+  bar       17         18         19         20         21
+  sound     riff A     riff B     riff A     riff B     riff A (a quarter played)
+  capture   └──────── a 4-bar capture pressed now ───────┘
+  ```
+
+  When bar 22 begins, slot 0 shows bar 18.
+- **Before that: time.** The newest 1,408 buckets, 11 to a column, newest at the right: 30.0 s at
+  48 kHz. Whole columns move on together, one every 11 buckets (235 ms), so the picture moves in
+  steps rather than shimmering as buckets cross column edges.
+- **Both views** show each column's loudest peak in each channel, the left above a centre line and
+  the right below, as a level (`peak_level.hpp`). Level k is a peak of at least
+  10^((3k − 48) / 20): 1 is −45 dBFS, 16 is 0 dBFS and above, and 0 is quieter than −45 dBFS. The
+  3 dB steps are a starting scale, to be tried in Rack.
+
+**Peaks.** The display cannot read the tape: the audio thread hands its pages back and takes them
+again as it draws. So the recorder also keeps the peaks of every **bucket**, 1/32 of a page: 1,024
+frames (21.3 ms) at 48 kHz, scaling with the rate like the page.
+- A bucket's peaks live in its page's slot and leave the history with the page: the history's
+  1,472 buckets take 2,944 bytes.
+- The bucket being recorded shows its frames so far.
+- A bucket the tape does not hold (older than the history, still to come, or in a page the pool
+  could not supply) shows nothing.
+- A column shows the loudest bucket it touches, so its resolution is a bucket. At the fastest
+  tempo the tracker takes, pulses 4 ms apart, about 8 columns share each bucket.
+
+**The UI model** (`ui_model.hpp`) holds what the screen shows, independent of how it is drawn: the
+header's values as `clock_report` gives them (the beat period, not a tempo; the renderer formats
+it), and the strip's 128 columns.
+- The engine rebuilds it at the end of every block that completes a bucket: 46.9 times a second at
+  48, 96 and 192 kHz, and 43.1 at 44.1, 88.2 and 176.4 kHz. `ui()` returns it.
+- It is read on the audio thread, like `clock()`. The adapter copies it for the thread that draws
+  (the Rack PR).
+- Rebuilding reads at most the history's buckets and one more per column, so its time is bounded,
+  and it allocates nothing.
+
+**Not yet:**
+- The capture length is 4 bars until there is a length control (§9.1).
+- In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too (§3.4). Until capture
+  exists the strip offers the 4 whole bars. Capture will own that rule, and the model will ask it.
+- The firmware carries the peaks and the model, 3,432 bytes of RAM (§2.3), though the Pod has no
+  display.
+
 ---
 
 ## 10. Software architecture
@@ -1229,6 +1296,7 @@ confidence, but nothing performance-critical depends on it.
   ```cpp
   void engine::process(const audio_block& block, std::span<const clock_event> events = {});
   const clock_report& engine::clock() const;
+  const ui_model& engine::ui() const;
   ```
 
   - `audio_block` holds `std::span`s for the stereo in and out.
@@ -1243,6 +1311,8 @@ confidence, but nothing performance-critical depends on it.
       covered, by its own report or a prediction less than half a period before it.
     - `bar_restarted` when a reset makes an already-reported pulse bar 0.
     - Adapters use these for clock out and the lights.
+  - At the end of each block that completes a bucket of the history, `ui()` is rebuilt: what the
+    display shows (§9.3).
   - The engine's sample clock never goes backwards; all timestamps are measured against it.
   - Commands (from UI, MIDI or tests) arrive through a **lock-free
     single-producer/single-consumer queue** and are applied at the start of the next block,
