@@ -153,6 +153,11 @@ samples recorder::bucket_frames() const noexcept
     return samples{static_cast<std::int64_t>(std::uint64_t{1} << bucket_shift_)};
 }
 
+std::size_t recorder::history_pages() const noexcept
+{
+    return history_pages_;
+}
+
 std::optional<page_pool::page_id> recorder::page_at(samples position) const noexcept
 {
     if (position.value() < 0 || position.value() >= end_) {
