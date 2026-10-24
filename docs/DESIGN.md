@@ -835,6 +835,79 @@ The other notes:
 - **Forward recording** uses the same mechanism: start at the next bar line, stop after N bars or
   at a second press. It comes after P1.
 
+#### Capture, as it will be built
+
+Capture turns a press into a window of the tape, held. Playing it is the next stage (§3.6, §5).
+In two PRs:
+
+1. **The window and its pages:**
+   - the press, as an edge in the block or as a command;
+   - the end line;
+   - the window, from the bar-line estimate plus L_in;
+   - shortening and refusal;
+   - admission and pinning;
+   - finality, the slot, and the loop report.
+2. **Capture under change:**
+   - a press checked at the exact moments its state can change: after each edge, and at each
+     fill-in's commit (§10.1);
+   - planning again when labels change, or fill-ins retire;
+   - the reset race and the 4.5× and 4.51× cases.
+
+The first PR, by example. At 120 BPM in 4/4 at 48 kHz, a pulse is 6,000 samples and a bar 2 s.
+
+```
+press 0.3 beat into bar 21     a late press: the end line is bar 21's, just past
+window                         bars 17 to 20, [line 17, line 21), 384,000 frames
+held at the press              line 17 − 50 ms  to  line 21 + 50 ms + half a pulse: pages 49
+                               to 61, with the clock started at sample 0
+final                          2 beats after line 21, once its 8 pulses have arrived
+then                           a page held only for the repair reserve is let go, and the slot
+                               holds the loop
+
+press 0.2 beat before bar 22   an early press: the end line is bar 22's, still to come
+window                         bars 18 to 21
+held                           the pages recorded so far, and admission reserves the rest
+                               up to line 22 + 50 ms + half a pulse, which the recorder pins
+                               as it takes them
+```
+
+- **In the engine.**
+  - **The press.** A capture edge is a third kind of `clock_event`, carrying its bar count. A
+    command does the same from a UI or MIDI thread, at the start of a block.
+  - **The bar lines** are `estimate_line()` at the lines' pulses, plus L_in, rounded to the
+    nearest sample, halves up.
+  - **L_in** is in the engine's config, 0 by default. In Rack it is 0: the block adapter hands
+    the engine each block's audio with the clock edges of the same block. The device's comes
+    with calibration (§3.5).
+- **What a capture holds.** Its window, as positions on the tape; its N + 1 bar lines and their
+  bar numbers, for the phrase positions; whether a reset had set that numbering (§3.6); and its
+  page ids, held through the pool, at most 47.
+- **Admission.** Admission counts the capture's pages as though none were shared with the
+  history. It is admitted while the history's 46, every loop's pages, and its own fit in the
+  pool. Shortening tries the largest of 1, 2, 4 or 8 bars, up to N, that fits both the history at
+  the press and 47 pages.
+- **The slot.** One slot (§3.4). A capture takes it when it starts: at its end line for an early
+  press, and at the press for a late one. The loop it replaces gives its pages back then.
+  Nothing plays yet; the slot holds the loop for the playback PR.
+- **Presses in flight.** An early press still waiting for its line is superseded by a new press.
+  A press while a capture is held but not final replaces it. The wait during an entry crossfade
+  comes with playback, which has crossfades.
+- **The loop report** (`loop()`, §10.1), each block: the slot's state (empty, waiting for its
+  line, provisional or final); and the last outcome: committed, shortened (from what to what, and
+  which limit) or refused (no tempo, nothing fits, or the pool is full).
+- **Host only.** Rack's CAPTURE button and BARS control come after playback.
+- **Tests,** from PR #6's closing review and §2.3:
+  - each shortening floor in the table above, ± ε;
+  - the end line just either side of ¼ beat;
+  - refusal for each reason;
+  - Rack's 52-page tape at 768 kHz, where a capture needing 7 pages is refused and the history
+    stays whole (§2.3);
+  - every page held or let go, audited, through supersede and replace;
+  - no allocation.
+
+  The second PR adds the reset race and 4.5×/4.51×. Playback takes the lead-time cases and the
+  crossfade tests.
+
 ### 3.5 Latency compensation
 
 The signal at the input jack reaches the engine **L_in** samples late (ADC filter delay plus DMA).
