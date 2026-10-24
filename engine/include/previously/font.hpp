@@ -37,7 +37,7 @@ using glyph = std::array<std::uint8_t, glyph_width>;
 }
 
 /// Draws `text` with the top-left pixel of its first glyph at (`x`, `y`). Whatever runs off the
-/// screen is cut off.
+/// screen is cut off, however far off the origin is.
 void draw_text(framebuffer& screen, std::size_t x, std::size_t y, std::string_view text) noexcept;
 
 }  // namespace previously

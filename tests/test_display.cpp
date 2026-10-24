@@ -320,6 +320,55 @@ TEST_CASE("text is a glyph every 6 pixels from its top-left, and is cut off at t
     CHECK(corner == diagonal);
 }
 
+TEST_CASE("text from an origin off the screen draws nothing, however far off it is")
+{
+    // Added to an origin near the largest size_t, a glyph's offsets would wrap onto the screen.
+    constexpr std::size_t far = std::numeric_limits<std::size_t>::max();
+
+    struct origin {
+        std::size_t      x;
+        std::size_t      y;
+        std::string_view text;
+    };
+
+    for (const origin& off : {
+             origin{.x = far, .y = 0, .text = "8"},
+             origin{.x = 0, .y = far, .text = "8"},
+             origin{.x = far - 2, .y = 10, .text = "8"},
+             origin{.x = 10, .y = far - 2, .text = "8"},
+             origin{.x = far - 5, .y = 10, .text = "88"},  // the second glyph would start at 0
+             origin{.x = framebuffer::width, .y = 0, .text = "8"},
+             origin{.x = 0, .y = framebuffer::height, .text = "8"},
+         }) {
+        CAPTURE(off.x);
+        CAPTURE(off.y);
+
+        framebuffer screen;
+
+        draw_text(screen, off.x, off.y, off.text);
+
+        CHECK(screen == framebuffer{});
+    }
+}
+
+TEST_CASE("text that runs off the right edge stops there")
+{
+    // 22 glyphs reach the edge: the 22nd starts at 126, and shows its first 2 columns, .# of the
+    // 8's top row and #. of its second.
+    const std::string long_line(30, '8');
+
+    framebuffer whole;
+    framebuffer reaching;
+
+    draw_text(whole, 0, 20, long_line);
+    draw_text(reaching, 0, 20, std::string_view{long_line}.substr(0, 22));
+
+    CHECK(whole == reaching);
+    CHECK_FALSE(whole.lit(126, 20));
+    CHECK(whole.lit(127, 20));
+    CHECK(whole.lit(126, 21));
+}
+
 // The header's texts.
 
 TEST_CASE("a line of text holds the 21 characters that fit across the screen, and drops the rest")

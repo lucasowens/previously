@@ -236,7 +236,18 @@ glyph glyph_of(char character) noexcept
 
 void draw_text(framebuffer& screen, std::size_t x, std::size_t y, std::string_view text) noexcept
 {
+    // A glyph starting past the right or bottom edge is not drawn at all. The framebuffer clips
+    // each pixel, but a glyph's offsets added to an origin near the largest size_t would wrap
+    // round onto the screen first.
+    if (y >= framebuffer::height) {
+        return;
+    }
+
     for (const char character : text) {
+        if (x >= framebuffer::width) {
+            return;  // x only grows, so nothing after this glyph is on the screen either
+        }
+
         const glyph pixels = glyph_of(character);
 
         for (std::size_t column = 0; column < glyph_width; ++column) {
