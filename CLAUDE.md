@@ -18,7 +18,9 @@ Read [docs/DESIGN.md](docs/DESIGN.md) (spec and roadmap, §14 has the P1 progres
 | `make bless` | Approve new golden renders. Only after the change is understood. |
 
 Test binary: `build/dev/tests/previously_tests` (doctest; `-tc="name*"` filters). The pre-commit
-hook runs the format check and the host tests.
+hook runs the format check and the host tests. The binary turns on ASan's alloc-dealloc check
+itself (`tests/sanitizer_options.cpp`), which macOS leaves off by default, so the check holds
+however the binary is run.
 
 ## Workflow
 
@@ -73,7 +75,7 @@ hook runs the format check and the host tests.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#10)
+## Current state (after PRs #1–#13)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -87,22 +89,29 @@ hook runs the format check and the host tests.
   - Edge times (PR #7): the tracker's `clock_history` keeps each pulse's raw edge and a fill-in
     bit beside its filtered time, read with `edge(index)`. The firmware build also enforces a
     RAM budget (DESIGN §2.3). PR #9 counts flash and RAM as the linker does.
-  - The paged tape (PR #10, host only): `page_pool`, the `recorder` with its 46-page history,
-    the DC blocker, the audio floor (2^-50) and `-ffp-contract=off` (ADR 0005, CODING_STANDARD
-    §3.13). The engine takes an optional tape span; Rack and the firmware pass none yet.
+  - The paged tape (PR #10): `page_pool`, the `recorder` with its 46-page history, the DC
+    blocker, the audio floor (2^-50) and `-ffp-contract=off` (ADR 0005, CODING_STANDARD §3.13).
+    The engine takes an optional tape span. The firmware passes none.
+  - Rack's tape (PR #13, `rack/src/tape.hpp`): one 210 MiB tape per module, allocated when it is
+    created and left unwritten; the engine is rebuilt over it at every rate (DESIGN §15 Q10).
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
   - After a slowed clock's retirement the history is shorter until new pulses overwrite the
     retired slots. From 768.5× on the engine's 1,536 pulses, a slowdown reads as a stop and
     restart, and its fill-ins stay
+  - Rack's tape holds fewer pages above 192 kHz (DESIGN §2.3): 105 at 352.8 and 384 kHz, where a
+    full-length loop cannot be replaced, and 52 at 705.6 and 768 kHz, where loops get 6 pages
+    and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
+    at: 184 MiB at 768 kHz. A rate change starts the history again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
   grew.
 - **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 83% now,
   57% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
-  the tests each owes; the crossfade-bits test and the floor test through the seam correlation
-  moved to capture and playback. Before the Rack controls, decide how Rack gets its tape
-  (DESIGN §15, question 10).
+- **Next:** the display (DESIGN §9.3): a UI model and a 128×64 framebuffer in the engine, shown
+  on the Rack panel, starting with the clock and the recorded history. Then capture and playback
+  (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes, and
+  DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
+  through the seam correlation moved to capture and playback.

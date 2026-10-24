@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Previously — tests: what the tape's tests share. A signal and what the recorder should make of
-// it, and pools that keep a failing test from aborting the run.
+// it, a feed that runs it through an engine, and pools that keep a failing test from aborting the
+// run.
 
 #pragma once
 
+#include "previously/engine.hpp"
 #include "previously/page_pool.hpp"
 #include "previously/units.hpp"
 
@@ -23,6 +25,18 @@ struct stereo_noise {
     std::vector<stereo_frame> dc_blocked;
 
     stereo_noise(std::size_t frames, sample_rate rate);
+};
+
+/// The noise, fed to an engine block by block, and the engine's output.
+struct engine_feed {
+    stereo_noise       input;
+    std::vector<float> out_left;
+    std::vector<float> out_right;
+
+    engine_feed(std::size_t frames, sample_rate rate);
+
+    /// Feeds frames [from, to) in blocks of `block_frames`.
+    void process(engine& target, std::size_t from, std::size_t to, std::size_t block_frames);
 };
 
 /// Checks, when a test ends, that every page of a pool has come back, then gives back any still

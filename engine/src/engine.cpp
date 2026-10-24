@@ -26,10 +26,7 @@ namespace {
 [[nodiscard]] std::span<stereo_frame> checked_tape(std::span<stereo_frame> tape,
                                                    sample_rate             rate) noexcept
 {
-    const auto page_frames = static_cast<std::uint64_t>(page_frames_for(rate).value());
-    const auto whole_pages = static_cast<std::uint64_t>(tape.size()) / page_frames;
-
-    expects(tape.empty() || whole_pages >= engine::history_pages);
+    expects(tape.empty() || engine::holds_history(tape.size(), rate));
 
     return tape;
 }
@@ -42,6 +39,16 @@ engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexce
       pool_{checked_tape(tape, config.rate), page_frames_for(config.rate)},
       recorder_{pool_, config.rate, history_pages}
 {
+}
+
+bool engine::holds_history(std::size_t tape_frames, sample_rate rate) noexcept
+{
+    // In 64 bits: a page reaches 2^32 frames above 3,145,728,000 Hz (2^16 × 48 kHz), which
+    // sample_rate can hold and the M7's 32-bit std::size_t cannot.
+    const auto page_frames = static_cast<std::uint64_t>(page_frames_for(rate).value());
+    const auto whole_pages = static_cast<std::uint64_t>(tape_frames) / page_frames;
+
+    return whole_pages >= history_pages;
 }
 
 std::size_t engine::max_block_frames(sample_rate rate) noexcept

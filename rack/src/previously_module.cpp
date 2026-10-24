@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Previously — Rack plugin: the Previously module. Audio passthrough through the real engine, plus
-// clock and reset inputs, the tracked grid on clock out, and beat, bar and clock-state lights.
+// Previously — Rack plugin: the Previously module. Audio passthrough through the real engine, which
+// records its input onto a tape; clock and reset inputs, the tracked grid on clock out, and beat,
+// bar and clock-state lights.
 
 #include "previously/clock_events.hpp"
 #include "previously/engine.hpp"
 
 #include "block_adapter.hpp"
 #include "plugin.hpp"
+#include "tape.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -103,13 +105,16 @@ public:
 private:
     void start(float rate_hz)
     {
-        // emplace() rebuilds in place: no heap allocation, safe on the audio thread.
+        // emplace() rebuilds in place: no heap allocation, safe on the audio thread. The tape was
+        // allocated with the module, and every rate records into it (tape.hpp).
         const sample_rate rate{static_cast<std::uint32_t>(rate_hz)};
 
-        engine_.emplace(engine_config{
-            .rate             = rate,
-            .max_block_frames = block_adapter::block_frames,
-        });
+        engine_.emplace(
+            engine_config{
+                .rate             = rate,
+                .max_block_frames = block_adapter::block_frames,
+            },
+            tape_.for_rate(rate));
         adapter_.emplace(rate);
     }
 
@@ -138,6 +143,7 @@ private:
         lights[clock_state_light_red].setBrightness(red ? 1.0F : 0.0F);
     }
 
+    tape                              tape_;  // declared before the engine, which records into it
     std::optional<previously::engine> engine_;
     std::optional<block_adapter>      adapter_;
     rack::dsp::PulseGenerator         beat_flash_;

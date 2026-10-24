@@ -7,10 +7,12 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cstdint>
 #include <exception>
 #include <random>
+#include <span>
 
 namespace previously::test {
 
@@ -40,6 +42,30 @@ stereo_noise::stereo_noise(std::size_t frames, sample_rate rate)
         dc_blocked.push_back(stereo_frame{
             .left  = left_blocker.process(left[i]),
             .right = right_blocker.process(right[i]),
+        });
+    }
+}
+
+engine_feed::engine_feed(std::size_t frames, sample_rate rate)
+    : input{frames, rate},
+      out_left(frames),
+      out_right(frames)
+{
+}
+
+void engine_feed::process(engine&     target,
+                          std::size_t from,
+                          std::size_t to,
+                          std::size_t block_frames)
+{
+    for (std::size_t start = from; start < to; start += block_frames) {
+        const std::size_t count = std::min(block_frames, to - start);
+
+        target.process(audio_block{
+            .in_left   = std::span{input.left}.subspan(start, count),
+            .in_right  = std::span{input.right}.subspan(start, count),
+            .out_left  = std::span{out_left}.subspan(start, count),
+            .out_right = std::span{out_right}.subspan(start, count),
         });
     }
 }

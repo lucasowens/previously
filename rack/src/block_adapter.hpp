@@ -27,12 +27,6 @@
 
 namespace previously::vcv {
 
-/// A stereo frame, in engine units (full scale = ±1.0).
-struct stereo_frame {
-    float left{0.0F};
-    float right{0.0F};
-};
-
 /// The control voltages for one tick.
 struct control_inputs {
     float clock_volts{0.0F};
@@ -41,7 +35,7 @@ struct control_inputs {
 
 /// Everything the adapter produces in one tick.
 struct tick_output {
-    stereo_frame audio;
+    stereo_frame audio{};  // in engine units: full scale is ±1.0
     float        clock_out_volts{0.0F};
     bool         block_finished{false};  // the engine just processed a block; its report is fresh
 };

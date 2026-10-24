@@ -58,6 +58,10 @@ public:
     /// long a history as the tape's pages allow, and records nothing on a tape under one page.
     explicit engine(const engine_config& config, std::span<stereo_frame> tape = {}) noexcept;
 
+    /// Whether a tape of `tape_frames` holds the history at `rate`: the least a tape with any
+    /// frames may hold. An empty tape is allowed too, and records nothing.
+    [[nodiscard]] static bool holds_history(std::size_t tape_frames, sample_rate rate) noexcept;
+
     /// The largest block whose grid pulses always fit in one clock_report: reports are at least
     /// half of clock_tracker::double_trigger_spacing apart. 3,072 frames at 48 kHz.
     [[nodiscard]] static std::size_t max_block_frames(sample_rate rate) noexcept;

@@ -6,6 +6,7 @@ target_include_directories(doctest SYSTEM INTERFACE ${PROJECT_SOURCE_DIR}/vendor
 add_executable(previously_tests
     test_main.cpp
     realtime_guard.cpp
+    sanitizer_options.cpp
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
     test_units.cpp
@@ -20,6 +21,7 @@ add_executable(previously_tests
     test_engine_tape.cpp
     test_wav.cpp
     test_block_adapter.cpp
+    test_rack_tape.cpp
 )
 
 target_link_libraries(previously_tests PRIVATE
