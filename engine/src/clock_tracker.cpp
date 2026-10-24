@@ -603,6 +603,25 @@ std::uint32_t clock_tracker::resets_applied() const noexcept
     return resets_applied_;
 }
 
+bool clock_tracker::numbered_by_reset() const noexcept
+{
+    // A pending reset labels the queries only once there is a pulse and a tempo to place it
+    // with, as effective_offset() does.
+    const bool pending_labels = pending_reset_ && latest_sequence_ >= 0 && pulse_period();
+
+    return resets_applied_ > 0U || pending_labels;
+}
+
+std::int64_t clock_tracker::sequence_of(std::int64_t index) const noexcept
+{
+    return index + effective_offset();
+}
+
+std::int64_t clock_tracker::index_of(std::int64_t sequence) const noexcept
+{
+    return sequence - effective_offset();
+}
+
 std::size_t clock_tracker::pulses_between(sample_time           after,
                                           sample_time           before,
                                           std::span<grid_point> out) const noexcept
