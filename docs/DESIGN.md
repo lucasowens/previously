@@ -676,6 +676,35 @@ The other notes:
   cannot see. That wander, not a peak figure like ±48 samples, is what to test when MIDI clock
   is wired.
 
+**As built** (`bar_line.hpp`, the first of capture's PRs):
+
+- **Two entry points.**
+  - `estimate_line(grid, pulse)` reads the edges of pulses *i* − 64 to *i* + 8 through
+    `clock_tracker::edge()`, with their fill-in bits, and takes the tracker's pulse period. It is
+    empty until the line's edge and the 8 after it are recorded: until then the line is not
+    final, and capture uses the raw edge (below). Edges older than the history shorten the window
+    from the left, which the short-history rules cover.
+  - The rule itself runs on a span of edges, the line's place in it, and a period. The tests feed
+    it planted edges directly, as PR #6's probe did.
+- **What it returns:** the estimated time; which step decided it (a short history, too few jitter
+  values, on a straight line, repaired, or kept); and *σ̂*, so the tests can pin its tail.
+- **Half a period**, in step 4, is half the tracker's pulse period: the one the residuals are taken
+  from. The probe used half the spacing of the line's two neighbours.
+- **Cost.** It runs on the audio thread, at a capture's press and when its lines become final.
+  Everything is in fixed arrays: 73 edges, 66 third differences, 12 second differences, and
+  2 × 8 × 7 slopes. Its time is bounded, and it allocates nothing.
+- **Tests.**
+  - The 132 deterministic scenarios, recovered from PR #6's probe with their builders. Each is held
+    to its table row's bound, in `float`, over the line and 3 pulses either side.
+  - Each row of the jitter table at its seed count, 50,000 or 20,000 a step cell, and the
+    never-worse property at 20,000 seeds or more a family.
+  - The mutation checks above, plus the fill-in skip and the 16-value minimum, each failing a test.
+  - Fill-ins and a short history driven through the real tracker.
+  - Jitter from our own generator, not the standard library's distributions, which differ
+    between libc++ and libstdc++, so macOS and Linux draw the same values.
+  - If the seeded properties cost the host suite more than a few seconds under the sanitizers,
+    they move to a test of their own, built optimized and still run by `make test`.
+
 #### When the loop starts
 
 - **Early press, with at least F (8 ms) before the line.** The new loop's first bar starts

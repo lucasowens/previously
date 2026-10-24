@@ -106,7 +106,7 @@ however the binary is run.
     hands each rebuilt model to the UI thread through a `triple_buffer` (engine), kept by the
     module so it outlives engine rebuilds (`rack/src/screen.hpp`); the widget draws it on the
     light layer. The module draws the panel's labels in Rack's Nunito Bold, since Rack's SVG
-    renderer draws no text. Not yet checked by the user in Rack.
+    renderer draws no text. Verified in VCV Rack 2 Pro by the user.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
