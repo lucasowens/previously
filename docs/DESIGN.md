@@ -1297,11 +1297,13 @@ rows
   - Without a beat period, the clock's state instead: `NO CLOCK`, or `SYNCING` after the first
     pulse.
   - At the right, the bar and beat in progress, counted from 1 as musicians count: the grid's bar
-    0, beat 0 shows as `1.1`, and bar −1 (before a pending reset's bar 0, §10.1) as bar `0`. A bar
-    shows at most 4 digits and a beat 2, its last ones: bar 10,000 shows as `0000`, 5.6 hours in
-    at 120 BPM.
+    0, beat 0 shows as `1.1`, and bar −1 (before a pending reset's bar 0, §10.1) as bar `0`.
+    Together they take at most 6 characters. The beat takes 1 digit up to 9 beats a bar and 2 from
+    10, and the bar 4 or 3. Past that each shows its last digits: in 4/4, bar 10,000 shows as
+    `0000`, 5.6 hours in at 120 BPM.
   - The longest left text (`99999 BPM FREE`) ends at pixel 82 and the longest right text
-    (`9999.99`) starts at 86, so they never meet.
+    (`9999.4` or `999.10`) starts at 93. The 10 dark columns between them are more than the 7
+    between words.
 - **The strip** draws each column as a pixel column.
   - A recorded column lights the centre row, its left level as that many pixels above it, and its
     right level below: a pixel a 3 dB step, 33 px at full scale on both sides. Silence (level 0)
@@ -1316,9 +1318,11 @@ rows
   - Under the whole bars, a bracket labelled `4 BARS`: what a capture pressed now takes. Slots of
     bars from before the clock stay empty inside it.
   - The time view draws the columns alone: no ticks, dots or bracket.
-- **The font** is our own: 5×7 glyphs in 6×8 cells, so 21 characters a line. It has digits,
-  capitals and a few marks. Its source draws each glyph as a picture, a string per row, so it reads
-  as it looks. A character without a glyph draws as a hollow box, which shows in a golden image.
+- **The font** is our own: 5×7 glyphs, 6 pixels apart, so 21 characters a line. It has digits,
+  capitals and a few marks, and its zero is slashed so it differs from the O. Its source draws the
+  glyphs as pictures, side by side, a string per row, so it reads as it looks, and a check at
+  compile time refuses a sheet drawn wrong. A character without a glyph draws as a hollow box,
+  which shows in a golden image.
 - **The framebuffer** keeps the SSD1306 and SH1106's page order: 8 pages of 128 bytes, each byte 8
   pixels down a column, the top one in bit 0. That is the order the controller takes over SPI, so a
   device can send it as it is. It is 1,024 bytes, held by whoever draws. The firmware links none of
@@ -1460,7 +1464,7 @@ Every change is verified as deep into the hardware as possible, automatically.
 | **T0** | Mac / CI | All targets build with `-Werror`. clang-tidy, cppcheck and clang-format clean. Firmware flash and RAM budgets met. | Every commit |
 | **T1** | Mac / CI | Engine unit tests under ASan/UBSan. A realtime guard traps any allocation inside `process()`. | Every commit |
 | **T2** | Mac / CI | Property and fuzz tests: random clocks (jitter, drift, ramps, dropouts) and command sequences. Invariants: no NaN or denormals, bounded output, click metric ≈ 1, exact loop lengths. | Every commit (short), nightly (long) |
-| **T3** | Mac / CI | Golden render regression with metrics. Intended changes are re-approved with `bless`. | Every commit |
+| **T3** | Mac / CI | Golden render regression with metrics, and the screen's golden images (§9.3). Intended changes are re-approved with `bless`. | Every commit |
 | **T4** | Mac / CI | Rack adapter unit tests, and the plugin builds against the pinned SDK. Loading the plugin in Rack is checked manually, because headless Rack stalls on macOS Core Audio (ADR 0002). | Every commit |
 | **T5** | Pod | The T1 suite cross-compiled and run on the M7, with results returned over the SWD probe (RTT). DWT cycle benchmarks have budgets. | Every commit (self-hosted runner) |
 | **T6** | Pod + ES-9 | HIL audio: flash, drive over USB MIDI, play stimulus and clock from the ES-9, record output **and the clock on a spare input** (one timebase), analyze. Checks: latency, frequency response, noise, THD+N, capture alignment, 64-bar drift, seam clicks, overruns. | Every commit (quick), nightly (full) |

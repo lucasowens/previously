@@ -15,7 +15,7 @@ Read [docs/DESIGN.md](docs/DESIGN.md) (spec and roadmap, §14 has the P1 progres
 | `make test` | The full gate: format check, tests, clang-tidy, cppcheck, Rack plugin, firmware |
 | `make format` | clang-format everything (LLVM 23 is pinned; the scripts refuse other versions) |
 | `make rack-install` | Build and install the plugin into the user's Rack folder. Rack must be restarted to load it. |
-| `make bless` | Approve new golden renders. Only after the change is understood. |
+| `make bless` | Approve new golden renders and screen images. Only after the change is understood. |
 
 Test binary: `build/dev/tests/previously_tests` (doctest; `-tc="name*"` filters). The pre-commit
 hook runs the format check and the host tests. The binary turns on ASan's alloc-dealloc check
@@ -75,7 +75,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#14)
+## Current state (after PRs #1–#15)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -96,8 +96,12 @@ however the binary is run.
     created and left unwritten; the engine is rebuilt over it at every rate (DESIGN §15 Q10).
   - The display's model (PR #14, DESIGN §9.3): the recorder keeps each bucket's peaks (1/32 page,
     as 3 dB levels, `peak_level.hpp`), and `engine::ui()` is rebuilt at every bucket: the clock,
-    and a 128-column strip showing the last 4 whole bars and the bar in progress, or the newest
-    30 s before the grid has a tempo. Host only: nothing draws it yet.
+    and a 128-column strip showing the last 4 whole bars and the bar in progress, or up to the
+    newest 30 s before the grid has a tempo.
+  - The screen (PR #15, DESIGN §9.3): `draw()` turns a model into a 128×64 framebuffer in the
+    SSD1306's page order (`display.hpp`, `framebuffer.hpp`), with our own 5×7 font (`font.hpp`).
+    Its golden images are plain PBM files in `tests/golden/display/`, which the unit tests
+    compare and `make bless` rewrites. Nothing shows the screen yet.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -114,8 +118,8 @@ however the binary is run.
 - **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 88% now,
   61% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** the rest of the display (DESIGN §9.3): the renderer (a 128×64 framebuffer, a font and
-  golden images), then Rack (a triple buffer from the audio thread, the widget and the panel).
-  Then capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes, and
-  DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
-  through the seam correlation moved to capture and playback.
+- **Next:** the rest of the display (DESIGN §9.3): Rack's panel (a triple buffer from the audio
+  thread, the widget and the panel). Then capture and playback (§3.4, §5), then the Rack
+  controls. PR #6's closing review lists the tests each owes, and DESIGN §2.3 adds one for Rack's
+  52-page tape; the crossfade-bits test and the floor test through the seam correlation moved to
+  capture and playback.
