@@ -5,6 +5,7 @@
 // engine's 2^15-frame pages and 46-page history are tested through the engine.
 
 #include "previously/page_pool.hpp"
+#include "previously/peak_level.hpp"
 #include "previously/recorder.hpp"
 
 #include "known.hpp"
@@ -14,11 +15,14 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <span>
 #include <utility>
+#include <vector>
 
 namespace previously {
 namespace {
@@ -44,10 +48,11 @@ constexpr samples at(std::int64_t page, std::int64_t frame = 0)
     return samples{(page * page_frames.value()) + frame};
 }
 
-/// Records `signal` from the recorder's end() up to `until`, in blocks of the given sizes, over
-/// and over.
+/// Records `signal` (anything with `left` and `right` vectors) from the recorder's end() up to
+/// `until`, in blocks of the given sizes, over and over.
+template <typename Signal>
 void record_until(recorder&                          target,
-                  const stereo_noise&                signal,
+                  const Signal&                      signal,
                   samples                            until,
                   std::initializer_list<std::size_t> block_sizes = {7})
 {
@@ -329,6 +334,308 @@ TEST_CASE("recording allocates nothing, across page boundaries")
     }
 
     CHECK(test::realtime_guard::violations() == 0U);
+}
+
+TEST_CASE("the history begins at its oldest page, and without pages it holds nothing")
+{
+    const stereo_noise signal = noise_for(11);
+    small_pool         pages{6};
+    recorder           target{pages.pool, rate_48k, history_pages};
+
+    CHECK(target.begin() == samples{0});
+
+    record_until(target, signal, at(3, 5));
+    CHECK(target.begin() == samples{0});
+
+    // Page 4's first frame starts page 4, and page 0 leaves.
+    record_until(target, signal, at(4, 1));
+    CHECK(target.begin() == at(1));
+
+    record_until(target, signal, at(10, 7));
+    CHECK(target.begin() == at(7));
+
+    // Without pages nothing is kept, so the history begins where it ends.
+    small_pool none{0};
+    recorder   empty{none.pool, rate_48k, history_pages};
+
+    record_until(empty, signal, at(2, 3));
+    CHECK(empty.begin() == empty.end());
+}
+
+// The peaks (DESIGN.md §9.3). Pages of 256 frames, so each of a page's 32 buckets is 8 frames.
+
+using peak_pool = test::pool_of<256>;
+
+constexpr std::int64_t bucket_frames = peak_pool::page_frames.value() / 32;
+constexpr std::int64_t page_buckets  = 32;
+
+/// Position `frame` of bucket `bucket`, counting buckets from the first.
+constexpr samples in_bucket(std::int64_t bucket, std::int64_t frame = 0)
+{
+    return samples{(bucket * bucket_frames) + frame};
+}
+
+/// A stereo signal and what the recorder should make of it.
+struct test_signal {
+    std::vector<float>        left;
+    std::vector<float>        right;
+    std::vector<stereo_frame> dc_blocked;
+
+    explicit test_signal(std::int64_t buckets)
+        : left(static_cast<std::size_t>(buckets * bucket_frames)),
+          right(left.size())
+    {
+    }
+
+    void block_dc()
+    {
+        dc_blocked = test::dc_block(left, right, rate_48k);
+    }
+};
+
+/// Noise whose loudness steps down 6 dB a bucket, from full scale to -48 dB and round again. The
+/// right channel runs four steps behind the left, so the two channels' levels differ.
+test_signal stepped_noise(std::int64_t buckets)
+{
+    const stereo_noise noise{static_cast<std::size_t>(buckets * bucket_frames), rate_48k};
+    test_signal        signal{buckets};
+
+    for (std::size_t i = 0; i < signal.left.size(); ++i) {
+        const auto bucket = static_cast<int>(i / static_cast<std::size_t>(bucket_frames));
+
+        signal.left[i]  = std::ldexp(noise.left[i], -(bucket % 9));
+        signal.right[i] = std::ldexp(noise.right[i], -((bucket + 4) % 9));
+    }
+
+    signal.block_dc();
+    return signal;
+}
+
+/// What the recorder should keep for `bucket`: its loudest DC-blocked frame, in each channel.
+peak_level expected_peaks(const test_signal& signal, std::int64_t bucket)
+{
+    float left  = 0.0F;
+    float right = 0.0F;
+
+    for (std::int64_t frame = 0; frame < bucket_frames; ++frame) {
+        const stereo_frame& blocked =
+            signal.dc_blocked[static_cast<std::size_t>(in_bucket(bucket, frame).value())];
+
+        left  = std::max(left, std::abs(blocked.left));
+        right = std::max(right, std::abs(blocked.right));
+    }
+
+    return peak_level{.left = level_of(left), .right = level_of(right)};
+}
+
+TEST_CASE("each bucket's peaks are its loudest frame in each channel, whatever the blocks")
+{
+    using block_sizes = std::initializer_list<std::size_t>;
+
+    const std::int64_t buckets = 4 * page_buckets;
+    const test_signal  signal  = stepped_noise(buckets);
+
+    // The stimulus is worth testing with: its buckets cover most levels, in both channels.
+    std::array<bool, peak_level::max_level + 1> left_levels{};
+    std::array<bool, peak_level::max_level + 1> right_levels{};
+
+    for (std::int64_t bucket = 0; bucket < buckets; ++bucket) {
+        left_levels[expected_peaks(signal, bucket).left]   = true;
+        right_levels[expected_peaks(signal, bucket).right] = true;
+    }
+
+    REQUIRE(std::ranges::count(left_levels, true) >= 14);
+    REQUIRE(std::ranges::count(right_levels, true) >= 14);
+
+    // One frame at a time; within a bucket; exactly a bucket; across one; a page, and more; a mix.
+    for (const block_sizes sizes : {
+             block_sizes{1},
+             block_sizes{7},
+             block_sizes{8},
+             block_sizes{9},
+             block_sizes{256},
+             block_sizes{300},
+             block_sizes{3, 29, 1, 15},
+         }) {
+        CAPTURE(*sizes.begin());
+        CAPTURE(sizes.size());
+
+        peak_pool pages{6};
+        recorder  target{pages.pool, rate_48k, history_pages};
+
+        REQUIRE(target.bucket_frames() == samples{bucket_frames});
+
+        record_until(target, signal, in_bucket(buckets), sizes);
+
+        for (std::int64_t bucket = 0; bucket < buckets; ++bucket) {
+            CAPTURE(bucket);
+
+            // Any frame of a bucket finds the bucket's peaks.
+            CHECK(target.peaks_at(in_bucket(bucket)) == expected_peaks(signal, bucket));
+            CHECK(target.peaks_at(in_bucket(bucket, bucket_frames - 1)) ==
+                  expected_peaks(signal, bucket));
+        }
+    }
+}
+
+TEST_CASE("the loudest frame counts wherever it falls in its bucket")
+{
+    // Silence, and in each bucket one frame louder than the rest, at every place in turn.
+    test_signal signal{page_buckets};
+
+    for (std::int64_t bucket = 0; bucket < page_buckets; ++bucket) {
+        const auto place =
+            static_cast<std::size_t>(in_bucket(bucket, bucket % bucket_frames).value());
+        const auto level = static_cast<std::size_t>((bucket * 5) % peak_level::max_level);
+
+        signal.left[place]  = level_thresholds[level];
+        signal.right[place] = -level_thresholds[peak_level::max_level - 1 - level];
+    }
+
+    signal.block_dc();
+
+    peak_pool pages{1};
+    recorder  target{pages.pool, rate_48k, 1};
+
+    record_until(target, signal, in_bucket(page_buckets), {5});
+
+    for (std::int64_t bucket = 0; bucket < page_buckets; ++bucket) {
+        CAPTURE(bucket);
+        CHECK(target.peaks_at(in_bucket(bucket)) == expected_peaks(signal, bucket));
+    }
+}
+
+TEST_CASE("a peak at a level's threshold reaches it, and one float below does not")
+{
+    for (const std::size_t level : {std::size_t{1}, std::size_t{9}, std::size_t{16}}) {
+        CAPTURE(level);
+
+        // After silence the DC blocker's state is exactly zero, so it passes one frame unchanged.
+        const float at_threshold = level_thresholds[level - 1];
+        const float just_below   = std::nextafter(at_threshold, 0.0F);
+
+        test_signal signal{1};
+        signal.left[3]  = at_threshold;
+        signal.right[3] = -just_below;
+        signal.block_dc();
+
+        REQUIRE(signal.dc_blocked[3].left == at_threshold);
+        REQUIRE(signal.dc_blocked[3].right == -just_below);
+
+        peak_pool pages{1};
+        recorder  target{pages.pool, rate_48k, 1};
+
+        record_until(target, signal, in_bucket(1), {1});
+
+        CHECK(target.peaks_at(in_bucket(0)) ==
+              peak_level{.left  = static_cast<std::uint8_t>(level),
+                         .right = static_cast<std::uint8_t>(level - 1)});
+    }
+}
+
+TEST_CASE("the bucket being recorded shows the frames recorded so far")
+{
+    test_signal signal{4};
+    signal.left[static_cast<std::size_t>(in_bucket(2, 5).value())] = level_thresholds[11];
+    signal.block_dc();
+
+    peak_pool pages{1};
+    recorder  target{pages.pool, rate_48k, 1};
+
+    // Up to the frame before the loud one: bucket 2 holds silence so far.
+    record_until(target, signal, in_bucket(2, 5), {3});
+
+    CHECK(target.peaks_at(in_bucket(2)) == peak_level{});
+    CHECK_FALSE(target.peaks_at(in_bucket(2, 5)).has_value());
+
+    // The loud frame arrives.
+    record_until(target, signal, in_bucket(2, 6), {1});
+
+    CHECK(target.peaks_at(in_bucket(2)) == peak_level{.left = 12, .right = 0});
+
+    // The bucket ends, and the next one starts afresh: the DC blocker's tail is far below -45 dB.
+    record_until(target, signal, in_bucket(3, 1), {1});
+
+    CHECK(target.peaks_at(in_bucket(2)) == peak_level{.left = 12, .right = 0});
+    CHECK(target.peaks_at(in_bucket(3)) == peak_level{});
+}
+
+TEST_CASE("peaks leave the history with their page, and a page's slot shows its own")
+{
+    const test_signal signal = stepped_noise(10 * page_buckets);
+    peak_pool         pages{6};
+    recorder          target{pages.pool, rate_48k, history_pages};
+
+    // Pages 6 to 9. Page 6 shares its slot with page 2, which was recorded first.
+    record_until(target, signal, in_bucket(10 * page_buckets));
+
+    CHECK_FALSE(target.peaks_at(in_bucket(6 * page_buckets) - samples{1}).has_value());
+    CHECK_FALSE(target.peaks_at(in_bucket(10 * page_buckets)).has_value());
+    CHECK_FALSE(target.peaks_at(samples{-1}).has_value());
+
+    for (std::int64_t bucket = 6 * page_buckets; bucket < 10 * page_buckets; ++bucket) {
+        CAPTURE(bucket);
+        CHECK(target.peaks_at(in_bucket(bucket)) == expected_peaks(signal, bucket));
+    }
+}
+
+TEST_CASE("a hole has no peaks, and the pages around it keep theirs")
+{
+    const test_signal signal = stepped_noise(6 * page_buckets);
+    peak_pool         pages{5};
+
+    {
+        recorder target{pages.pool, rate_48k, history_pages};
+
+        record_until(target, signal, in_bucket(4 * page_buckets));
+
+        // Something else holds page 0's audio, and the last free page: page 4 is a hole.
+        const page_pool::page_id held  = known(target.page_at(samples{0}));
+        const page_pool::page_id spare = known(pages.pool.acquire());
+        pages.pool.retain(held);
+
+        record_until(target, signal, in_bucket(5 * page_buckets));
+
+        for (std::int64_t bucket = 4 * page_buckets; bucket < 5 * page_buckets; ++bucket) {
+            CAPTURE(bucket);
+            CHECK_FALSE(target.peaks_at(in_bucket(bucket)).has_value());
+        }
+
+        const std::int64_t last_before = (4 * page_buckets) - 1;
+        CHECK(target.peaks_at(in_bucket(last_before)) == expected_peaks(signal, last_before));
+
+        // A page comes free, and page 5 has its peaks.
+        pages.pool.release(spare);
+        record_until(target, signal, in_bucket(6 * page_buckets));
+
+        for (std::int64_t bucket = 5 * page_buckets; bucket < 6 * page_buckets; ++bucket) {
+            CAPTURE(bucket);
+            CHECK(target.peaks_at(in_bucket(bucket)) == expected_peaks(signal, bucket));
+        }
+
+        pages.pool.release(held);
+    }
+}
+
+TEST_CASE("with pages under 32 frames, each bucket is one frame")
+{
+    const stereo_noise signal = noise_for(6);
+    small_pool         pages{6};
+    recorder           target{pages.pool, rate_48k, history_pages};
+
+    record_until(target, signal, at(6));
+
+    REQUIRE(target.bucket_frames() == samples{1});
+
+    for (std::int64_t position = at(2).value(); position < at(6).value(); ++position) {
+        CAPTURE(position);
+
+        const stereo_frame& blocked = signal.dc_blocked[static_cast<std::size_t>(position)];
+
+        CHECK(target.peaks_at(samples{position}) ==
+              peak_level{.left  = level_of(std::abs(blocked.left)),
+                         .right = level_of(std::abs(blocked.right))});
+    }
 }
 
 }  // namespace

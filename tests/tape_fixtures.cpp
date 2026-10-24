@@ -33,17 +33,28 @@ stereo_noise::stereo_noise(std::size_t frames, sample_rate rate)
         right[i] = noise(generator) + 0.5F;
     }
 
-    dc_blocker left_blocker{rate};
-    dc_blocker right_blocker{rate};
+    dc_blocked = dc_block(left, right, rate);
+}
 
-    dc_blocked.reserve(frames);
+std::vector<stereo_frame>
+dc_block(std::span<const float> left, std::span<const float> right, sample_rate rate)
+{
+    REQUIRE(left.size() == right.size());
 
-    for (std::size_t i = 0; i < frames; ++i) {
-        dc_blocked.push_back(stereo_frame{
+    dc_blocker                left_blocker{rate};
+    dc_blocker                right_blocker{rate};
+    std::vector<stereo_frame> blocked;
+
+    blocked.reserve(left.size());
+
+    for (std::size_t i = 0; i < left.size(); ++i) {
+        blocked.push_back(stereo_frame{
             .left  = left_blocker.process(left[i]),
             .right = right_blocker.process(right[i]),
         });
     }
+
+    return blocked;
 }
 
 engine_feed::engine_feed(std::size_t frames, sample_rate rate)
@@ -91,13 +102,6 @@ page_audit::~page_audit()
             pool_->release(page);
         }
     }
-}
-
-small_pool::small_pool(std::size_t pages, std::size_t extra_frames)
-    : memory((pages * static_cast<std::size_t>(page_frames.value())) + extra_frames),
-      pool{memory, page_frames},
-      audit{pool}
-{
 }
 
 }  // namespace previously::test

@@ -75,7 +75,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#13)
+## Current state (after PRs #1–#14)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -94,6 +94,10 @@ however the binary is run.
     The engine takes an optional tape span. The firmware passes none.
   - Rack's tape (PR #13, `rack/src/tape.hpp`): one 210 MiB tape per module, allocated when it is
     created and left unwritten; the engine is rebuilt over it at every rate (DESIGN §15 Q10).
+  - The display's model (PR #14, DESIGN §9.3): the recorder keeps each bucket's peaks (1/32 page,
+    as 3 dB levels, `peak_level.hpp`), and `engine::ui()` is rebuilt at every bucket: the clock,
+    and a 128-column strip showing the last 4 whole bars and the bar in progress, or the newest
+    30 s before the grid has a tempo. Host only: nothing draws it yet.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -105,13 +109,13 @@ however the binary is run.
     and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
     at: 184 MiB at 768 kHz. A rate change starts the history again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. The RAM budget (70% now) keeps the bootloader layout open; if it trips, report what
+  asked. The RAM budget (73% now) keeps the bootloader layout open; if it trips, report what
   grew.
-- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 83% now,
-  57% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
+- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 88% now,
+  61% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** the display (DESIGN §9.3): a UI model and a 128×64 framebuffer in the engine, shown
-  on the Rack panel, starting with the clock and the recorded history. Then capture and playback
-  (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes, and
+- **Next:** the rest of the display (DESIGN §9.3): the renderer (a 128×64 framebuffer, a font and
+  golden images), then Rack (a triple buffer from the audio thread, the widget and the panel).
+  Then capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists the tests each owes, and
   DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
   through the seam correlation moved to capture and playback.

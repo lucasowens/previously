@@ -6,6 +6,7 @@ add_library(previously_engine STATIC
     src/engine.cpp
     src/page_pool.cpp
     src/recorder.cpp
+    src/ui_model.cpp
 )
 
 add_library(previously::engine ALIAS previously_engine)
