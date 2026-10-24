@@ -8,11 +8,11 @@
 // The strip has two views:
 //   - bars, once the grid has a tempo: the last 4 whole bars and the bar in progress, in five
 //     slots starting at columns 0, 25, 51, 76 and 102. The 4 whole bars are what a 4-bar capture
-//     takes when pressed now (§3.4), so the strip answers "if I press now, what do I get?". The
-//     bar in progress fills its slot from the left, and when it ends the strip moves on a bar.
-//     Its end is a prediction, so a new estimate of the tempo moves its columns, and the fill can
-//     step back. Each bar fills its slot whatever its length, so a tempo change squeezes none off
-//     the screen.
+//     pressed now asks for (§3.4 can shorten it), so the strip answers "if I press now, what do I
+//     get?". The bar in progress fills its slot from the left, and when it ends the strip moves
+//     on a bar. Its end is a prediction, so a new estimate of the tempo moves its columns, and the
+//     fill can step back. Each bar fills its slot whatever its length, so a tempo change squeezes
+//     none off the screen.
 //   - time, before that: the newest buckets, 11 to a column, newest at the right. The newest
 //     column fills as it is recorded, so the strip holds from 1,397 buckets and a frame up to
 //     1,408 (29.8 to 30.0 s at 48 kHz). Whole columns move on together, one every 11 buckets.

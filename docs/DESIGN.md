@@ -1215,7 +1215,9 @@ images, then Rack's panel. The screen has a header line, and a **history strip**
 - **The header:** the clock's state, the tempo, and the bar and beat in progress.
 - **The strip, once the grid has a tempo: bars.** The last 4 whole bars and the bar in progress,
   in five slots starting at columns 0, 25, 51, 76 and 102. The 4 whole bars are what a 4-bar
-  capture takes when pressed now (§3.4), so the strip answers "if I press now, what do I get?".
+  capture pressed now asks for, so the strip answers "if I press now, what do I get?". Capture
+  takes them all except where §3.4 says otherwise: it is shortened just after the clock starts
+  and at slow tempos, and the last ¼ beat before a bar line has its own rule (Not yet, below).
   - The bar in progress fills its slot from the left. When it ends, the strip moves on a bar. Its
     end line is a prediction, so when the tempo is re-estimated its columns move, and the fill can
     step back. How far depends on how much of the bar has passed when the change is confirmed. In
@@ -1314,9 +1316,11 @@ rows
     columns, so the dots stand still as the bar fills. Where they end is the predicted bar line,
     so they move when the tempo is re-estimated.
   - The bar lines are 2-pixel ticks above and below the strip at columns 25, 51, 76 and 102. They
-    stay outside the strip, so they hide no peak.
-  - Under the whole bars, a bracket labelled `4 BARS`: what a capture pressed now takes. Slots of
-    bars from before the clock stay empty inside it.
+    stay outside the strip, so they hide no peak. Just after the clock starts, slots of bars from
+    before it get none: the grid cannot place their lines (`first_bar_slot`).
+  - Under the whole bars, a bracket labelled `4 BARS`: the capture length, over the bars a
+    capture pressed now asks for. Slots of bars from before the clock stay empty inside it. The
+    bracket does not foresee how §3.4 shortens a capture; capture will decide that (Not yet).
   - The time view draws the columns alone: no ticks, dots or bracket.
 - **The font** is our own: 5×7 glyphs, 6 pixels apart, so 21 characters a line. It has digits,
   capitals and a few marks, and its zero is slashed so it differs from the O. Its source draws the
@@ -1335,8 +1339,9 @@ rows
 
 **Not yet:**
 - The capture length is 4 bars until there is a length control (§9.1).
-- In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too (§3.4). Until capture
-  exists the strip offers the 4 whole bars. Capture will own that rule, and the model will ask it.
+- In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too, and just after the
+  clock starts or at slow tempos it is shortened (§3.4). Until capture exists, the strip and its
+  bracket offer the 4 whole bars. Capture will own those rules, and the model will ask it.
 - The firmware carries the peaks and the model, 3,432 bytes of RAM (§2.3), though the Pod has no
   display.
 - Nothing shows the screen yet: Rack's panel is the next PR.

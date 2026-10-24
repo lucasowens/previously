@@ -616,23 +616,43 @@ TEST_CASE("the time view has no dots, whatever its now column says")
     }
 }
 
-TEST_CASE("bar lines are ticks above and below the strip where each slot but the first starts")
+TEST_CASE(
+    "bar lines are ticks above and below the strip where each placed bar but the first starts")
 {
-    ui_model model = bars_at_120();
+    // The slots start at columns 0, 25, 51, 76 and 102. Just after the clock starts, slots before
+    // first_bar_slot hold bars whose lines the grid cannot place, and get no tick.
+    struct example {
+        std::size_t                first_bar_slot;
+        std::array<std::size_t, 4> lines;  // 128 for none
+    };
 
-    model.now_column = ui_model::strip_columns;  // no dots
+    for (const example& placed : {
+             example{.first_bar_slot = 0, .lines = {25, 51, 76, 102}},
+             example{.first_bar_slot = 1, .lines = {25, 51, 76, 102}},
+             example{.first_bar_slot = 2, .lines = {51, 76, 102, 128}},
+             example{.first_bar_slot = 4, .lines = {102, 128, 128, 128}},
+         }) {
+        CAPTURE(placed.first_bar_slot);
 
-    const framebuffer bars = drawn(model);
+        ui_model model = bars_at_120();
 
-    for (std::size_t x = 0; x < framebuffer::width; ++x) {
-        CAPTURE(x);
+        model.now_column     = ui_model::strip_columns;  // no dots
+        model.first_bar_slot = placed.first_bar_slot;
 
-        const bool line = x == 25 || x == 51 || x == 76 || x == 102;
+        const framebuffer bars = drawn(model);
 
-        CHECK((column_rows(bars, x) & (tick_rows | strip_rows)) == (line ? tick_rows : 0));
+        for (std::size_t x = 0; x < framebuffer::width; ++x) {
+            CAPTURE(x);
+
+            const bool line = std::ranges::find(placed.lines, x) != placed.lines.end();
+
+            CHECK((column_rows(bars, x) & (tick_rows | strip_rows)) == (line ? tick_rows : 0));
+        }
     }
 
     // The time view has none.
+    ui_model model = bars_at_120();
+
     model.view = strip_view::time;
 
     const framebuffer time = drawn(model);
@@ -861,7 +881,8 @@ TEST_CASE("golden image: clock started")
     test::check_golden_image(
         drawn(model),
         "clock_started",
-        "The clock started 2 bars ago, in bar 3 beat 4: the bars before it stay empty.");
+        "The clock started 2 bars ago, in bar 3 beat 4: the bars before it stay empty, their "
+        "lines unmarked.");
 }
 
 TEST_CASE("golden image: freewheeling")

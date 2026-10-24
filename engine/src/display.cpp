@@ -132,10 +132,14 @@ void draw_strip(const ui_model& model, framebuffer& screen) noexcept
     }
 }
 
-/// Ticks where each bar slot after the first starts, above and below the strip.
-void draw_bar_lines(framebuffer& screen) noexcept
+/// Ticks where each bar slot after the first starts, above and below the strip. Slots before the
+/// first placed bar hold bars from before the clock, whose lines the grid cannot place, so they
+/// get none.
+void draw_bar_lines(const ui_model& model, framebuffer& screen) noexcept
 {
-    for (std::size_t slot = 1; slot < ui_model::bar_slots; ++slot) {
+    for (std::size_t slot = std::max<std::size_t>(1, model.first_bar_slot);
+         slot < ui_model::bar_slots;
+         ++slot) {
         const std::size_t x = ui_model::slot_start(slot);
 
         for (std::size_t row = 0; row < screen_layout::tick_rows; ++row) {
@@ -145,7 +149,7 @@ void draw_bar_lines(framebuffer& screen) noexcept
     }
 }
 
-/// A bracket under the whole bars, what a capture pressed now takes, and its label.
+/// A bracket under the whole bars, what a capture pressed now asks for, and its label.
 void draw_whole_bars(framebuffer& screen) noexcept
 {
     constexpr std::size_t left  = 0;
@@ -253,7 +257,7 @@ void draw(const ui_model& model, framebuffer& screen) noexcept
     draw_strip(model, screen);
 
     if (model.view == strip_view::bars) {
-        draw_bar_lines(screen);
+        draw_bar_lines(model, screen);
         draw_whole_bars(screen);
     }
 }
