@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Previously — Rack plugin: the Previously module. Audio passthrough through the real engine, which
-// records its input onto a tape; clock and reset inputs, the tracked grid on clock out, and beat,
-// bar and clock-state lights.
+// records its input onto a tape; clock and reset inputs, the tracked grid on clock out, beat, bar
+// and clock-state lights, and the screen (DESIGN.md §9.3).
 
 #include "previously/clock_events.hpp"
+#include "previously/display.hpp"
 #include "previously/engine.hpp"
+#include "previously/framebuffer.hpp"
+#include "previously/ui_model.hpp"
 
 #include "block_adapter.hpp"
 #include "plugin.hpp"
+#include "screen.hpp"
 #include "tape.hpp"
 
 #include <cstdint>
@@ -91,6 +95,7 @@ public:
 
         if (output.block_finished) {
             show_clock(engine_->clock());
+            screen_.after_block(*engine_);
         }
 
         lights[beat_light].setBrightness(beat_flash_.process(args.sampleTime) ? 1.0F : 0.0F);
@@ -100,6 +105,12 @@ public:
     void onSampleRateChange(const SampleRateChangeEvent& event) override
     {
         start(event.sampleRate);
+    }
+
+    /// The models for the screen. Its widget takes them on the UI thread.
+    [[nodiscard]] screen_feed& screen() noexcept
+    {
+        return screen_;
     }
 
 private:
@@ -116,6 +127,7 @@ private:
             },
             tape_.for_rate(rate));
         adapter_.emplace(rate);
+        screen_.restart();
     }
 
     void show_clock(const clock_report& report)
@@ -148,6 +160,7 @@ private:
     std::optional<block_adapter>      adapter_;
     rack::dsp::PulseGenerator         beat_flash_;
     rack::dsp::PulseGenerator         bar_flash_;
+    screen_feed                       screen_;  // the module's, so it outlives each engine
 };
 
 /// Jack centres on the panel, in millimetres from the top-left corner.
@@ -162,15 +175,85 @@ constexpr jack_position clock_state_led{38.8F, 22.0F};
 constexpr jack_position clock_jack{15.0F, 42.0F};
 constexpr jack_position reset_jack{35.8F, 42.0F};
 constexpr jack_position clock_out_jack{35.8F, 60.0F};
-constexpr jack_position in_left_jack{15.0F, 96.0F};
-constexpr jack_position in_right_jack{15.0F, 110.0F};
-constexpr jack_position out_left_jack{35.8F, 96.0F};
-constexpr jack_position out_right_jack{35.8F, 110.0F};
+constexpr jack_position in_left_jack{15.0F, 99.0F};
+constexpr jack_position in_right_jack{15.0F, 113.0F};
+constexpr jack_position out_left_jack{35.8F, 99.0F};
+constexpr jack_position out_right_jack{35.8F, 113.0F};
+
+/// The screen's pixels: a 1.54" SSD1309's active area, centred in the panel's viewing window
+/// between the clock and audio boxes, which is 1 mm wider all round (DESIGN.md §9.3).
+constexpr jack_position screen_centre{25.4F, 77.5F};
+constexpr float         screen_width_mm  = 35.05F;
+constexpr float         screen_height_mm = 17.51F;
 
 [[nodiscard]] rack::math::Vec to_pixels(jack_position position)
 {
     return rack::mm2px(rack::math::Vec{position.x_mm, position.y_mm});
 }
+
+/// The screen: the module's newest model, drawn into a framebuffer and painted on the light
+/// layer, so it stays lit when the room is dimmed. In the module browser there is no module, and
+/// it shows an empty model.
+class screen_widget : public rack::widget::Widget {
+public:
+    explicit screen_widget(previously_module* instance) noexcept
+        : module_{instance}
+    {
+        box.size = rack::mm2px(rack::math::Vec{screen_width_mm, screen_height_mm});
+        box.pos  = to_pixels(screen_centre).minus(box.size.div(2.0F));
+    }
+
+    void drawLayer(const DrawArgs& args, int layer) override
+    {
+        if (layer == 1) {
+            refresh();
+            paint(args.vg);
+        }
+
+        Widget::drawLayer(args, layer);
+    }
+
+private:
+    /// Draws the newest model, if there is one the framebuffer does not show yet.
+    void refresh()
+    {
+        if (module_ != nullptr && module_->screen().take()) {
+            previously::draw(module_->screen().model(), pixels_);
+            drawn_ = true;
+        }
+
+        if (!drawn_) {
+            previously::draw(ui_model{}, pixels_);
+            drawn_ = true;
+        }
+    }
+
+    /// A rectangle for each column's run of lit pixels. Anti-aliasing is off, so the edges where
+    /// runs in neighbouring columns meet leave no faint seams.
+    void paint(NVGcontext* vg) const
+    {
+        const float pixel_width  = box.size.x / static_cast<float>(framebuffer::width);
+        const float pixel_height = box.size.y / static_cast<float>(framebuffer::height);
+
+        nvgShapeAntiAlias(vg, 0);
+        nvgBeginPath(vg);
+
+        for_each_run(pixels_, [vg, pixel_width, pixel_height](pixel_run run) {
+            nvgRect(vg,
+                    static_cast<float>(run.x) * pixel_width,
+                    static_cast<float>(run.top) * pixel_height,
+                    pixel_width,
+                    static_cast<float>(run.bottom - run.top) * pixel_height);
+        });
+
+        nvgFillColor(vg, nvgRGB(0xE8, 0xF1, 0xFF));
+        nvgFill(vg);
+    }
+
+    previously_module* module_;
+    framebuffer        pixels_;
+    bool               drawn_{false};
+};
 
 class previously_widget : public rack::ModuleWidget {
 public:
@@ -221,6 +304,8 @@ public:
             to_pixels(clock_state_led),
             instance,
             previously_module::clock_state_light));
+
+        addChild(new screen_widget{instance});  // Rack deletes a widget with its parent
     }
 };
 
