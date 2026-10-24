@@ -14,6 +14,7 @@
 #include "previously/page_pool.hpp"
 #include "previously/recorder.hpp"
 #include "previously/spsc_queue.hpp"
+#include "previously/ui_model.hpp"
 #include "previously/units.hpp"
 
 #include <array>
@@ -86,6 +87,12 @@ public:
     /// position, for as long as its page is in the history. Audio thread only.
     [[nodiscard]] const recorder& history() const noexcept;
 
+    /// What the display shows, as of the last block that completed a bucket of the history: 46.9
+    /// times a second at 48 kHz (DESIGN.md §9.3). Until the first, nothing yet, at the engine's
+    /// rate, with a serial of 0. Audio thread only: an adapter copies it for the thread that draws
+    /// it.
+    [[nodiscard]] const ui_model& ui() const noexcept;
+
     [[nodiscard]] const engine_config& config() const noexcept;
 
 private:
@@ -110,6 +117,8 @@ private:
     // The tape. The pool is declared before everything that holds its pages, so it outlives them.
     page_pool pool_;
     recorder  recorder_;
+
+    ui_model ui_;
 };
 
 }  // namespace previously

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Previously — the engine: commands, the clock grid, and (for now) a sample-exact passthrough.
+// Previously — the engine: commands, the clock grid, the display's model, and (for now) a
+// sample-exact passthrough.
 
 #include "previously/engine.hpp"
 
@@ -37,7 +38,8 @@ engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexce
     : config_{checked_config(config)},
       clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
       pool_{checked_tape(tape, config.rate), page_frames_for(config.rate)},
-      recorder_{pool_, config.rate, history_pages}
+      recorder_{pool_, config.rate, history_pages},
+      ui_{.rate = config.rate}
 {
 }
 
@@ -103,6 +105,14 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
     sample_clock_ += frames;
 
     report_clock(block_start, block_end);
+
+    // The display's model, once a bucket has filled, from everything the block did. Sample clock
+    // values are never negative, so plain division finds each one's bucket.
+    const std::int64_t bucket = recorder_.bucket_frames().value();
+
+    if (block_start.whole_samples().value() / bucket != sample_clock_.value() / bucket) {
+        update_ui_model(ui_, clock_tracker_, recorder_, config_.rate);
+    }
 }
 
 bool engine::post(const command& request) noexcept
@@ -123,6 +133,11 @@ const clock_report& engine::clock() const noexcept
 const recorder& engine::history() const noexcept
 {
     return recorder_;
+}
+
+const ui_model& engine::ui() const noexcept
+{
+    return ui_;
 }
 
 const engine_config& engine::config() const noexcept
