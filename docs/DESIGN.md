@@ -1271,12 +1271,71 @@ it), and the strip's 128 columns.
 - Rebuilding reads at most the history's buckets and one more per column, so its time is bounded,
   and it allocates nothing.
 
+**The screen** (`display.hpp`). `draw(model, screen)` draws a model into a 128×64 framebuffer, a
+bit a pixel. It uses integers only and allocates nothing, so the same code can serve Rack's panel,
+the golden images and an OLED. It runs on the thread that draws, from the adapter's copy of the
+model. Its layout, with the example above:
+
+```
+rows
+ 0–6    120.0 BPM                                  21.2    header
+ 9–10                ╵         ╵        ╵         ╵        bar lines (bars view)
+11–26   ▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃▇▂▅▃           left peaks, up to 16 px
+27      ──────────────────────────────────────────·····    centre: recorded, then still to come
+28–43   ▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀▔▀           right peaks, down to 16 px
+44–45                ╷         ╷        ╷         ╷        bar lines
+48–51   └──────────────────────────────────────┘           the whole bars
+55–61                    4 BARS
+```
+
+- **The header** is one line of text.
+  - At the left, the tempo from the beat period: tenths of a BPM below 1,000 and whole BPM from
+    there, rounded to the nearest with halves up. It is right-aligned in 5 characters, so `BPM`
+    stays put as the tempo moves: `120.0 BPM`, `  7.5 BPM`, ` 3750 BPM`. Tempos above 99,999 BPM,
+    far beyond the 3,750 BPM of pulses 4 ms apart, show as `99999`.
+  - `FREE` after it while the clock freewheels: the tempo is the last one measured.
+  - Without a beat period, the clock's state instead: `NO CLOCK`, or `SYNCING` after the first
+    pulse.
+  - At the right, the bar and beat in progress, counted from 1 as musicians count: the grid's bar
+    0, beat 0 shows as `1.1`, and bar −1 (before a pending reset's bar 0, §10.1) as bar `0`. A bar
+    shows at most 4 digits and a beat 2, its last ones: bar 10,000 shows as `0000`, 5.6 hours in
+    at 120 BPM.
+  - The longest left text (`99999 BPM FREE`) ends at pixel 82 and the longest right text
+    (`9999.99`) starts at 86, so they never meet.
+- **The strip** draws each column as a pixel column.
+  - A recorded column lights the centre row, its left level as that many pixels above it, and its
+    right level below: a pixel a 3 dB step, 33 px at full scale on both sides. Silence (level 0)
+    is a bare centre line.
+  - A column the tape does not hold stays dark, centre included, so a hole or the time before the
+    tape shows nothing.
+  - In the bars view, the columns still to come light every other pixel of the centre row, at even
+    columns, so the dots stand still as the bar fills. Where they end is the predicted bar line,
+    so they move when the tempo is re-estimated.
+  - The bar lines are 2-pixel ticks above and below the strip at columns 25, 51, 76 and 102. They
+    stay outside the strip, so they hide no peak.
+  - Under the whole bars, a bracket labelled `4 BARS`: what a capture pressed now takes. Slots of
+    bars from before the clock stay empty inside it.
+  - The time view draws the columns alone: no ticks, dots or bracket.
+- **The font** is our own: 5×7 glyphs in 6×8 cells, so 21 characters a line. It has digits,
+  capitals and a few marks. Its source draws each glyph as a picture, a string per row, so it reads
+  as it looks. A character without a glyph draws as a hollow box, which shows in a golden image.
+- **The framebuffer** keeps the SSD1306 and SH1106's page order: 8 pages of 128 bytes, each byte 8
+  pixels down a column, the top one in bit 0. That is the order the controller takes over SPI, so a
+  device can send it as it is. It is 1,024 bytes, held by whoever draws. The firmware links none of
+  this until it draws.
+- **Golden images** are plain PBM files (`P1`), one pixel row a line, in `tests/golden/display/`.
+  A diff shows which rows changed, and the 1s show the picture. Most are drawn from models built in
+  the test, covering each state and the edges above; one is drawn from the engine playing the
+  example above. The unit tests compare them, and `make bless` rewrites them along with the audio
+  renders.
+
 **Not yet:**
 - The capture length is 4 bars until there is a length control (§9.1).
 - In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too (§3.4). Until capture
   exists the strip offers the 4 whole bars. Capture will own that rule, and the model will ask it.
 - The firmware carries the peaks and the model, 3,432 bytes of RAM (§2.3), though the Pod has no
   display.
+- Nothing shows the screen yet: Rack's panel is the next PR.
 
 ---
 
