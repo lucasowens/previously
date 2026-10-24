@@ -74,14 +74,25 @@ public:
             return 0.0F;
         }
 
+        // An insertion sort: the lists are short, at most 66 values. std::sort's own insertion
+        // step draws a false -Warray-bounds from GCC 14 and 15 at -O3 on the 8-value lists.
         std::array<float, Capacity> sorted = values_;
-        const std::span<float>      live   = std::span{sorted}.first(size_);
 
-        std::ranges::sort(live);
+        for (std::size_t next = 1; next < size_; ++next) {
+            const float value = sorted[next];
+            std::size_t place = next;
+
+            while (place > 0 && sorted[place - 1] > value) {
+                sorted[place] = sorted[place - 1];
+                --place;
+            }
+
+            sorted[place] = value;
+        }
 
         const std::size_t middle = size_ / 2;
 
-        return size_ % 2 == 1 ? live[middle] : (live[middle - 1] + live[middle]) / 2.0F;
+        return size_ % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2.0F;
     }
 
 private:
