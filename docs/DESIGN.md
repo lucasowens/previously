@@ -509,7 +509,7 @@ estimated from the edges *x* of the 8 pulses on each side:
      |---|---|---|
      | 12 second differences, inside the fitted sides | 4.9% of seeds | — |
      | 44 second differences | 0.044% | up to 11.35 samples |
-     | 66 third differences (adopted) | 0.004% | at most 0.03 |
+     | 66 third differences (adopted) | 0.004% | at most 0.032 |
 
      - **The 44-value row** inflates because a ramp in the window splits its second differences
        into two populations. On +20% over 2 bars, σ̂ is 11.35 samples (0.6·c) at the offset
@@ -660,7 +660,7 @@ And three under jitter:
 | The curvature check | A 1,800-sample hiccup on the pulse of a ×1.1 step lands 533 samples off, not on the line |
 | The correction term | The small-step cells: up to 11 of 20,000 lines in a cell, by up to 159 samples |
 | The 66-value window | *σ̂*'s own tail: below half the true jitter in 4.9% of seeds (12 values), not 0.004% |
-| Third differences (back to second) | A ramp inside the window inflates *σ̂* to 11.35 samples, not 0.03 |
+| Third differences (back to second) | A ramp inside the window inflates *σ̂* to 11.35 samples, not 0.032 |
 
 The other notes:
 
@@ -676,7 +676,7 @@ The other notes:
   cannot see. That wander, not a peak figure like ±48 samples, is what to test when MIDI clock
   is wired.
 
-**As built** (`bar_line.hpp`, the first of capture's PRs):
+**As built** (`bar_line.hpp`, PR #17):
 
 - **Two entry points.**
   - `estimate_line(grid, pulse)` reads the edges of pulses *i* − 64 to *i* + 8 through
@@ -687,23 +687,45 @@ The other notes:
   - The rule itself runs on a span of edges, the line's place in it, and a period. The tests feed
     it planted edges directly, as PR #6's probe did.
 - **What it returns:** the estimated time; which step decided it (a short history, too few jitter
-  values, on a straight line, repaired, or kept); and *σ̂*, so the tests can pin its tail.
+  values, on a straight line, repaired, or kept); *σ̂* and the number of third differences it came
+  from; and, when step 3 ran, the number of second differences *c_within* came from.
 - **Half a period**, in step 4, is half the tracker's pulse period: the one the residuals are taken
-  from. The probe used half the spacing of the line's two neighbours.
+  from. The probe used half the spacing of the line's two neighbours. Run through the real
+  tracker, with its own period, all 132 scenarios come out as the table says.
+- **Against the probe.** Fed the same edges, this `float` rule and the probe's `double` one agree
+  to 0.0003 samples over the 132 scenarios, and exactly over 16,000 jittered lines.
 - **Cost.** It runs on the audio thread, at a capture's press and when its lines become final.
   Everything is in fixed arrays: 73 edges, 66 third differences, 12 second differences, and
   2 × 8 × 7 slopes. Its time is bounded, and it allocates nothing.
 - **Tests.**
-  - The 132 deterministic scenarios, recovered from PR #6's probe with their builders. Each is held
-    to its table row's bound, in `float`, over the line and 3 pulses either side.
-  - Each row of the jitter table at its seed count, 50,000 or 20,000 a step cell, and the
-    never-worse property at 20,000 seeds or more a family.
-  - The mutation checks above, plus the fill-in skip and the 16-value minimum, each failing a test.
-  - Fill-ins and a short history driven through the real tracker.
-  - Jitter from our own generator, not the standard library's distributions, which differ
-    between libc++ and libstdc++, so macOS and Linux draw the same values.
-  - If the seeded properties cost the host suite more than a few seconds under the sanitizers,
-    they move to a test of their own, built optimized and still run by `make test`.
+  - The 132 deterministic scenarios, recovered from PR #6's probe by replaying its edits, each run
+    through the real tracker. A row that keeps its edges is held to them exactly, at the line and
+    the 3 pulses either side. A row that repairs is held to its bound where it repairs, and to the
+    raw edges it keeps around them. The table's worst includes those kept edges' gate jitter, 0.005
+    samples rms: this generator's draw puts it at 0.012 beside the 2- and 30-sample hiccups, whose
+    repaired lines are within 0.005.
+  - Every threshold just either side and at equality: 1 sample, half a period, 64 samples, twice
+    the spread, 4 and 20 *σ̂*, 16 values and 8 edges. Each mechanism has a test that fails
+    without it: 23 mutations, all caught.
+  - The seeded properties at the review's counts: the jitter table's rows at 50,000 seeds, the 21
+    step cells and the 9 never-worse families at 20,000, *σ̂*'s tail at 50,000, and the fill-in
+    measurements. They take about a minute under the sanitizers and 5 seconds optimized, so they
+    run in their own executable: `make seeds`, which `make test` and CI run.
+  - Jitter comes from our own generator, not the standard library's distributions, which differ
+    between libc++ and libstdc++, so macOS and Linux draw the same values. Its draws differ from
+    the probe's, and so do its rare-event counts:
+    - *σ̂* falls below half the true jitter in 7 of 50,000 seeds, where the probe's draws gave 2;
+    - the 1,800-sample hiccup row's worst repair is 11.7 samples (12.1);
+    - with 40 fill-ins, the median *σ̂* is 6.07 (6.03);
+    - without the correction term, 17 of the step cells' 420,000 lines come out worse, up to 6 in
+      a cell, by up to 159.5 samples (31, 11 and 159);
+    - with 10 usable values and no minimum, no line came out worse (1 in 50,000), so a
+      deterministic test pins the minimum instead: 15 values keep the edge, and 16 repair it.
+- **Open: *c_within*'s fill-in skip.** It was carried over from *σ̂*, where it matters (step 1),
+  without a measurement of its own. Over 25,344 ramps where the clock stops just after the line,
+  with a hiccup on the line, the skip changes 16 estimates: 12 for the worse, by up to 42
+  samples, and 4 for the better. All 16 stay within 52 samples of the line, where their raw edges
+  are 300 or 1,800 samples off. The rule keeps the skip until this is decided.
 
 #### When the loop starts
 
@@ -1662,7 +1684,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). In four PRs: the tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); next, capture and playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); then capture and playback in three PRs: the bar-line estimate (done: PR #17, host only), capture, and playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
