@@ -771,10 +771,12 @@ TEST_CASE("while the clock is stopped, the bars go on with the freewheeling grid
 TEST_CASE("at slow tempos the bars reach back past the history, and what is older is empty")
 {
     // 30 BPM: a pulse every 24,000 frames, a bar of 384,000 (8 s). Five bars are 40 s, and the
-    // history is 31.4 s at most.
+    // history is 31.4 s at most. Late in the bar in progress, 19/20 of the way through, the
+    // history begins 3.07 bars in: bar 2's slot lies wholly before it, and bar 3's begins before
+    // it.
     const std::int64_t slow_pulse = 24'000;
     const std::int64_t slow_bar   = 16 * slow_pulse;
-    const std::int64_t end        = (6 * slow_bar) + (slow_bar / 2);
+    const std::int64_t end        = (6 * slow_bar) + ((19 * slow_bar) / 20);
 
     scene played{end, steady_pulses(0, slow_pulse, end)};
 
@@ -786,14 +788,17 @@ TEST_CASE("at slow tempos the bars reach back past the history, and what is olde
     check_header(model, played);
     check_bars_view(model, played);
 
-    // The history begins part of the way through bar 2, so bar 2's slot starts empty and then
-    // holds sound, and the bars after it are whole.
-    REQUIRE(played.history().begin().value() > 2 * slow_bar);
-    REQUIRE(played.history().begin().value() < 3 * slow_bar);
+    REQUIRE(played.history().begin().value() > 3 * slow_bar);
+    REQUIRE(played.history().begin().value() < 4 * slow_bar);
 
-    CHECK(model.strip.front() == strip_column{});
-    CHECK(model.strip[slot_starts[1] - 1].recorded);
-    CHECK(model.strip[slot_starts[1]].recorded);
+    // Bar 2 ended before the history begins, so its slot holds nothing.
+    for (std::size_t column = 0; column < slot_starts[1]; ++column) {
+        CHECK(model.strip[column] == strip_column{});
+    }
+
+    // Bar 3's slot starts empty, and then holds sound.
+    CHECK(model.strip[slot_starts[1]] == strip_column{});
+    CHECK(model.strip[slot_starts[2] - 1].recorded);
 }
 
 TEST_CASE("a page the pool could not supply is an empty stretch of the strip")
