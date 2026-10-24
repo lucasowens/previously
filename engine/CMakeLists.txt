@@ -3,7 +3,9 @@
 add_library(previously_engine STATIC
     src/clock_tracker.cpp
     src/dc_blocker.cpp
+    src/display.cpp
     src/engine.cpp
+    src/font.cpp
     src/page_pool.cpp
     src/recorder.cpp
     src/ui_model.cpp
