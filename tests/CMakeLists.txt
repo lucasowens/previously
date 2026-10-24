@@ -14,6 +14,7 @@ add_executable(previously_tests
     test_clock_tracker.cpp
     test_spsc_queue.cpp
     test_dc_blocker.cpp
+    test_peak_level.cpp
     test_page_pool.cpp
     test_recorder.cpp
     test_engine.cpp
