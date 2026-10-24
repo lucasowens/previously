@@ -26,6 +26,7 @@ add_executable(previously_tests
     test_engine.cpp
     test_engine_clock.cpp
     test_engine_tape.cpp
+    test_captured_loop.cpp
     test_wav.cpp
     test_block_adapter.cpp
     test_rack_tape.cpp
