@@ -10,6 +10,8 @@
 #include "previously/units.hpp"
 
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <vector>
 
 namespace previously::test {
@@ -26,6 +28,10 @@ struct stereo_noise {
 
     stereo_noise(std::size_t frames, sample_rate rate);
 };
+
+/// Each channel through its own DC blocker, as the recorder runs them.
+[[nodiscard]] std::vector<stereo_frame>
+dc_block(std::span<const float> left, std::span<const float> right, sample_rate rate);
 
 /// The noise, fed to an engine block by block, and the engine's output.
 struct engine_feed {
@@ -58,16 +64,25 @@ private:
     int        exceptions_at_start_;
 };
 
-/// A pool of small pages, the memory under it, and its audit. Declare anything that holds its
-/// pages after it, so that holder goes first.
-struct small_pool {
-    static constexpr samples page_frames{16};
+/// A pool of pages of `PageFrames` frames, the memory under it, and its audit. Declare anything
+/// that holds its pages after it, so that holder goes first.
+template <std::int64_t PageFrames>
+struct pool_of {
+    static constexpr samples page_frames{PageFrames};
 
     std::vector<stereo_frame> memory;
     page_pool                 pool;
     page_audit                audit;
 
-    explicit small_pool(std::size_t pages, std::size_t extra_frames = 0);
+    explicit pool_of(std::size_t pages, std::size_t extra_frames = 0)
+        : memory((pages * static_cast<std::size_t>(PageFrames)) + extra_frames),
+          pool{memory, page_frames},
+          audit{pool}
+    {
+    }
 };
+
+/// Pages of 16 frames, so every page boundary is a few frames away.
+using small_pool = pool_of<16>;
 
 }  // namespace previously::test
