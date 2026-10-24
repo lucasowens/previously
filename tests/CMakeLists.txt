@@ -9,6 +9,7 @@ add_executable(previously_tests
     sanitizer_options.cpp
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
+    golden_image.cpp
     test_units.cpp
     test_sample_time.cpp
     test_clock_tracker.cpp
@@ -18,6 +19,7 @@ add_executable(previously_tests
     test_page_pool.cpp
     test_recorder.cpp
     test_ui_model.cpp
+    test_display.cpp
     test_engine.cpp
     test_engine_clock.cpp
     test_engine_tape.cpp
@@ -33,6 +35,13 @@ target_link_libraries(previously_tests PRIVATE
     doctest
 )
 
+# The screen's golden images (golden_image.hpp): where they live, and where a mismatch leaves what
+# was drawn.
+target_compile_definitions(previously_tests PRIVATE
+    PREVIOUSLY_DISPLAY_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden/display"
+    PREVIOUSLY_DISPLAY_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/golden_out/display"
+)
+
 # The Rack adapter is header-only and depends only on the engine, so it is tested here (T4).
 target_include_directories(previously_tests PRIVATE ${PROJECT_SOURCE_DIR}/rack/src)
 
@@ -41,7 +50,8 @@ previously_apply_strict_options(previously_tests)
 add_test(NAME unit COMMAND previously_tests)
 
 # T3: golden render regression. Renders every stimulus in golden/stimulus and compares the result
-# byte-for-byte with golden/expected. `cmake --build <dir> --target bless` approves new output.
+# byte-for-byte with golden/expected. The unit tests compare the screen's golden images in
+# golden/display. `cmake --build <dir> --target bless` approves new output of both.
 set(golden_args
     -DRENDER=$<TARGET_FILE:previously_render>
     -DGOLDEN_DIR=${CMAKE_CURRENT_SOURCE_DIR}/golden
@@ -52,8 +62,11 @@ add_test(NAME golden COMMAND ${CMAKE_COMMAND} ${golden_args} -P ${CMAKE_CURRENT_
 
 add_custom_target(bless
     COMMAND ${CMAKE_COMMAND} ${golden_args} -DBLESS=ON -P ${CMAKE_CURRENT_SOURCE_DIR}/golden/run_golden.cmake
-    DEPENDS previously_render
-    COMMENT "Approving current render output as the new golden reference"
+    COMMAND ${CMAKE_COMMAND} -E env PREVIOUSLY_BLESS=1
+            $<TARGET_FILE:previously_tests> "--test-case=golden image: *"
+    DEPENDS previously_render previously_tests
+    COMMENT "Approving current render output and screen images as the new golden reference"
+    VERBATIM
 )
 
 # The render tool refuses a block size the engine cannot take at the file's sample rate, with a
