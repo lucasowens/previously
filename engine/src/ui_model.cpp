@@ -18,6 +18,21 @@ namespace {
     return -floor_divide(-time.ticks(), sample_time::ticks_per_sample);
 }
 
+/// The first frame at or after where share `index` of `parts` equal shares of `span` begins,
+/// counted from `start`. Edges fall between frames, so a share can fall between ticks. It is
+/// rounded up to a tick, never down: rounding up twice is rounding up once, so the frame is the
+/// first at or after the share itself. Rounded down, a share less than a tick after a frame would
+/// start one frame early. `span` is never negative.
+[[nodiscard]] std::int64_t first_frame_of_share(sample_time  start,
+                                                sample_time  span,
+                                                std::int64_t index,
+                                                std::int64_t parts) noexcept
+{
+    const std::int64_t share = -floor_divide(-(span.ticks() * index), parts);
+
+    return first_frame_from(start + sample_time::from_ticks(share));
+}
+
 /// Shows frames [first, last) in `column`: the loudest of the buckets touching them that the
 /// history holds. Only the history is searched, so however long the stretch, the work is bounded:
 /// at most the history's buckets, and one more.
@@ -108,8 +123,8 @@ show_bars(ui_model& model, const clock_tracker& grid, const recorder& history) n
         const auto width = static_cast<std::int64_t>(ui_model::slot_start(slot + 1) - offset);
 
         for (std::int64_t index = 0; index < width; ++index) {
-            const std::int64_t first  = first_frame_from(start + ((span * index) / width));
-            const std::int64_t last   = first_frame_from(start + ((span * (index + 1)) / width));
+            const std::int64_t first  = first_frame_of_share(start, span, index, width);
+            const std::int64_t last   = first_frame_of_share(start, span, index + 1, width);
             const std::size_t  column = offset + static_cast<std::size_t>(index);
 
             // The rest of the bar in progress is still to come.

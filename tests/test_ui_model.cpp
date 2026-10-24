@@ -577,6 +577,52 @@ TEST_CASE("a column starts at the first frame at or after its share of its bar")
     check_bars_view(model, played);
 }
 
+TEST_CASE("a column starts at the first frame after its share, even a fraction of a tick after one")
+{
+    // Edges are timed to a fraction of a sample, so a share of a bar can fall between ticks. Here
+    // bar 3 starts where, in its slot of 26 columns, the 13th column's share falls 2/26 of a tick
+    // after frame 409,600, the first frame of a bucket: less than half a tick, so rounding to the
+    // nearest tick would not do either. That frame comes before the share, so it belongs to the
+    // 12th column, which then touches the bucket. One loud frame there shows in both columns.
+    // Rounding the share down to a tick would put the frame in the 13th column alone.
+    //
+    // At 120 BPM a pulse is 393,216,000 ticks, and 12/26 of a bar is 2,903,748,923.08 of them.
+    constexpr std::int64_t pulse_ticks  = pulse_frames * sample_time::ticks_per_sample;
+    constexpr std::int64_t bar_ticks    = 16 * pulse_ticks;
+    constexpr std::int64_t loud         = 400 * bucket_frames;
+    constexpr std::int64_t share        = (12 * bar_ticks) / 26;
+    constexpr std::int64_t bar_3        = (loud * sample_time::ticks_per_sample) - share;
+    constexpr std::int64_t first_pulse  = bar_3 - (3 * bar_ticks);
+    constexpr std::int64_t bar_6_frames = (bar_3 + (3 * bar_ticks)) / sample_time::ticks_per_sample;
+    constexpr std::int64_t end          = ((bar_6_frames + (bar_frames / 2)) / 32) * 32;
+
+    static_assert(loud == 409'600);
+    static_assert(first_pulse > 0);
+    static_assert((12 * bar_ticks) % 26 == 2, "the share falls 2/26 of a tick after the frame");
+
+    scene played{one_loud_frame(end, loud), {}};
+
+    for (std::int64_t ticks = first_pulse; ticks < end * sample_time::ticks_per_sample;
+         ticks += pulse_ticks) {
+        played.pulse_at(sample_time::from_ticks(ticks));
+    }
+
+    played.play_until(end);
+
+    // The gate's edges are trusted, so the grid places bar 3 exactly where its edge put it.
+    REQUIRE(known(played.grid().bar_start(3)) == sample_time::from_ticks(bar_3));
+    REQUIRE(known(played.grid().bar_start(4)) == sample_time::from_ticks(bar_3 + bar_ticks));
+
+    // Bars 2 to 6: bar 3 is in slot 1, 26 columns from column 25, so its 12th and 13th columns
+    // are 36 and 37.
+    const ui_model model = played.model();
+
+    REQUIRE(model.bar == 6);
+    CHECK(model.strip[36] == strip_column{.peaks = {.left = 14, .right = 0}, .recorded = true});
+    CHECK(model.strip[37] == strip_column{.peaks = {.left = 14, .right = 0}, .recorded = true});
+    check_bars_view(model, played);
+}
+
 TEST_CASE("each bar fills its slot whatever its length, through a change of tempo")
 {
     // 4 bars at 120 BPM, then 80 BPM: a pulse every 9,000 frames, a bar of 144,000.
