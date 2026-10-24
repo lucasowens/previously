@@ -245,7 +245,7 @@ build links with, so the budget follows the layout.
 | With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code, unoptimized (below) |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
-| With the history's peaks and the UI model (§9.3) | 88% (115,676 bytes) | 6,804 bytes more unoptimized; 4,000 at `-O3` with LTO |
+| With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -257,7 +257,7 @@ only targets defined after it in the firmware's directory. The engine is added b
 toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
 - **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
   scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it. The
-  history's peaks and the UI model take it to 79,316 bytes (61%): 4,000 more than the commit before
+  history's peaks and the UI model take it to 79,340 bytes (61%): 4,024 more than the commit before
   them, built in the same scratch tree.
 - **Speed.** The engine's speed on the device would not be representative until it is fixed.
 - **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
