@@ -81,6 +81,20 @@ steady_pulses(std::int64_t first, std::int64_t period, std::int64_t until)
     return pulses;
 }
 
+/// Edges at whole frames, as clock edges in time.
+[[nodiscard]] std::vector<sample_time> at_frames(std::span<const std::int64_t> frames)
+{
+    std::vector<sample_time> times;
+
+    times.reserve(frames.size());
+
+    for (const std::int64_t frame : frames) {
+        times.push_back(at_frame(frame));
+    }
+
+    return times;
+}
+
 /// A stereo signal, and what the recorder should make of it.
 struct test_signal {
     std::vector<float>        left;
@@ -169,7 +183,7 @@ public:
           std::vector<std::int64_t> pulses,
           std::size_t               tape_pages = engine::history_pages)
         : signal_{std::move(signal)},
-          pulses_{std::move(pulses)},
+          pulses_{at_frames(pulses)},
           tape_(tape_pages * static_cast<std::size_t>(page_frames_for(rate_48k).value())),
           pool_{tape_, page_frames_for(rate_48k)},
           audit_{pool_},
@@ -189,11 +203,13 @@ public:
 
             // The block's edges in time order. A pulse and a reset at once: the pulse first.
             while (true) {
-                const bool pulse_due = next_pulse_ < pulses_.size() && pulses_[next_pulse_] < end;
+                const bool pulse_due =
+                    next_pulse_ < pulses_.size() && pulses_[next_pulse_] < at_frame(end);
                 const bool reset_due = next_reset_ < resets_.size() && resets_[next_reset_] < end;
 
-                if (pulse_due && (!reset_due || pulses_[next_pulse_] <= resets_[next_reset_])) {
-                    grid_.pulse(at_frame(pulses_[next_pulse_]));
+                if (pulse_due &&
+                    (!reset_due || pulses_[next_pulse_] <= at_frame(resets_[next_reset_]))) {
+                    grid_.pulse(pulses_[next_pulse_]);
                     ++next_pulse_;
                 }
                 else if (reset_due) {
@@ -212,6 +228,16 @@ public:
             history_.record(std::span{signal_.left}.subspan(offset, block_frames),
                             std::span{signal_.right}.subspan(offset, block_frames));
         }
+    }
+
+    /// Adds a clock edge at `when`, which may fall between frames: after every pulse given or added
+    /// already, and not yet played.
+    void pulse_at(sample_time when)
+    {
+        REQUIRE(when >= at_frame(history_.end().value()));
+        REQUIRE((pulses_.empty() || when > pulses_.back()));
+
+        pulses_.push_back(when);
     }
 
     /// Adds a reset edge at `frame`, after any added already, and not yet played.
@@ -252,7 +278,7 @@ public:
         return signal_;
     }
 
-    [[nodiscard]] std::span<const std::int64_t> pulses() const
+    [[nodiscard]] std::span<const sample_time> pulses() const
     {
         return pulses_;
     }
@@ -291,7 +317,7 @@ public:
 
 private:
     test_signal               signal_;
-    std::vector<std::int64_t> pulses_;
+    std::vector<sample_time>  pulses_;
     std::size_t               next_pulse_{0};
     std::vector<std::int64_t> resets_;
     std::size_t               next_reset_{0};
@@ -895,10 +921,11 @@ public:
 
         events_.clear();
 
-        while (next_pulse_ < source_->pulses().size() && source_->pulses()[next_pulse_] < end) {
+        while (next_pulse_ < source_->pulses().size() &&
+               source_->pulses()[next_pulse_] < at_frame(end)) {
             events_.push_back(clock_event{
                 .type   = clock_event_type::pulse,
-                .offset = at_frame(source_->pulses()[next_pulse_] - start),
+                .offset = source_->pulses()[next_pulse_] - at_frame(start),
             });
             ++next_pulse_;
         }
