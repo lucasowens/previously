@@ -203,7 +203,7 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
     | Rate | Pool pages | Beyond the history | What fits |
     |---|---|---|---|
     | Up to 192 kHz | 210 | 164 | P1's 187 |
-    | 352.8, 384 kHz | 105 | 59 | One loop of any length. A second only while the two total 59 pages: two 8-bar loops from 102 BPM. Replacing a full-length loop with another is refused: 94 > 59 |
+    | 352.8, 384 kHz | 105 | 59 | One loop of any length. A second only while the two total 59 pages: two 8-bar loops from 101.37 BPM at 384 kHz and 93.09 at 352.8 kHz. Replacing a full-length loop with another is refused: 94 > 59 |
     | 705.6, 768 kHz | 52 | 6 | Loops totalling 6 pages, which hold any span up to 5 pages: 3.41 s at 768 kHz, 3.72 s at 705.6 kHz |
 
     At 705.6 and 768 kHz, by §3.4's reserve rule (half a period after the end line, 50 ms
