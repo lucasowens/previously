@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 
 namespace previously {
 
@@ -49,8 +50,14 @@ enum class strip_view : std::uint8_t {
 };
 
 struct ui_model {
-    static constexpr std::size_t strip_columns           = 128;
-    static constexpr std::size_t bar_slots               = 5;  // 4 whole bars and one in progress
+    static constexpr std::size_t strip_columns = 128;
+
+    /// The bars view's whole bars: a 4-bar capture's, until there is a length control (§9.1).
+    static constexpr std::size_t whole_bars = 4;
+
+    /// The whole bars, and the bar in progress.
+    static constexpr std::size_t bar_slots = whole_bars + 1;
+
     static constexpr std::size_t buckets_per_time_column = 11;
 
     /// The first column of bar slot `slot`: 0, 25, 51, 76 and 102, and 128 past the last.
@@ -78,6 +85,9 @@ struct ui_model {
     [[nodiscard]] friend constexpr bool operator==(const ui_model&,
                                                    const ui_model&) noexcept = default;
 };
+
+// An adapter hands the model to the thread that draws it as a copy of its bytes (DESIGN.md §9.3).
+static_assert(std::is_trivially_copyable_v<ui_model>, "the model is copied byte for byte");
 
 /// Rebuilds `model` from the grid and the history as they stand at the history's end, and counts
 /// it. Audio thread. Realtime-safe: bounded time, no allocation.

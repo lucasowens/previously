@@ -66,11 +66,13 @@ show_bars(ui_model& model, const clock_tracker& grid, const recorder& history) n
         return false;
     }
 
-    // The slots' bar lines: the 4 whole bars, the bar in progress, and where it will end.
+    // The slots' bar lines: the whole bars, the bar in progress, and where it will end.
     std::array<std::optional<sample_time>, ui_model::bar_slots + 1> lines{};
 
+    const std::int64_t first_bar = *model.bar - static_cast<std::int64_t>(ui_model::whole_bars);
+
     for (std::size_t slot = 0; slot < lines.size(); ++slot) {
-        lines[slot] = grid.bar_start(*model.bar - 4 + static_cast<std::int64_t>(slot));
+        lines[slot] = grid.bar_start(first_bar + static_cast<std::int64_t>(slot));
     }
 
     if (!lines[ui_model::bar_slots - 1] || !lines[ui_model::bar_slots]) {

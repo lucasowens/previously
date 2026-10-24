@@ -48,6 +48,8 @@ constexpr std::int64_t bar_frames   = 16 * pulse_frames;
 /// The columns where the bar slots start, worked out by hand, and 128 past the last.
 constexpr std::array<std::size_t, ui_model::bar_slots + 1> slot_starts{0, 25, 51, 76, 102, 128};
 
+static_assert(ui_model::whole_bars == 4);
+static_assert(ui_model::bar_slots == 5);
 static_assert(ui_model::slot_start(0) == 0);
 static_assert(ui_model::slot_start(1) == 25);
 static_assert(ui_model::slot_start(2) == 51);
@@ -311,13 +313,14 @@ void check_bars_view(const ui_model& model, const scene& played)
     REQUIRE(model.view == strip_view::bars);
 
     const std::int64_t end = played.history().end().value();
-    const std::int64_t bar = known(model.bar);
+    const std::int64_t first_bar =
+        known(model.bar) - static_cast<std::int64_t>(ui_model::whole_bars);
 
     // The earliest slots are bars the grid cannot place yet.
     std::size_t first_placed = ui_model::bar_slots - 1;
 
     while (first_placed > 0 &&
-           played.grid().bar_start(bar - 4 + static_cast<std::int64_t>(first_placed) - 1)) {
+           played.grid().bar_start(first_bar + static_cast<std::int64_t>(first_placed) - 1)) {
         --first_placed;
     }
 
@@ -328,7 +331,7 @@ void check_bars_view(const ui_model& model, const scene& played)
     for (std::size_t slot = 0; slot < ui_model::bar_slots; ++slot) {
         CAPTURE(slot);
 
-        const std::int64_t slot_bar = bar - 4 + static_cast<std::int64_t>(slot);
+        const std::int64_t slot_bar = first_bar + static_cast<std::int64_t>(slot);
         const auto         width = static_cast<double>(slot_starts[slot + 1] - slot_starts[slot]);
 
         for (std::size_t column = slot_starts[slot]; column < slot_starts[slot + 1]; ++column) {
