@@ -828,7 +828,8 @@ TEST_CASE("the engine rebuilds its model at the end of each block that completes
     }
 }
 
-TEST_CASE("buckets follow the rate, so the model is rebuilt as often at 96 kHz as at 48 kHz")
+TEST_CASE(
+    "at 96 kHz the model states its rate from the start, and is rebuilt as often as at 48 kHz")
 {
     constexpr sample_rate rate_96k{96'000U};
 
@@ -838,12 +839,16 @@ TEST_CASE("buckets follow the rate, so the model is rebuilt as often at 96 kHz a
 
     REQUIRE(audio_engine.history().bucket_frames() == samples{2'048});
 
+    // Before the first rebuild the model holds nothing yet, but at the engine's rate.
+    CHECK(audio_engine.ui() == ui_model{.rate = rate_96k});
+
     std::vector<float> silence(block_frames);
     std::vector<float> out(block_frames);
 
     // One block short of a bucket, then the block that completes it.
     for (std::size_t block = 0; block < 2'048 / block_frames; ++block) {
         CHECK(audio_engine.ui().serial == 0U);
+        CHECK(audio_engine.ui().rate == rate_96k);
 
         audio_engine.process(audio_block{
             .in_left   = silence,

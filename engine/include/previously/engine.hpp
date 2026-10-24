@@ -88,8 +88,9 @@ public:
     [[nodiscard]] const recorder& history() const noexcept;
 
     /// What the display shows, as of the last block that completed a bucket of the history: 46.9
-    /// times a second at 48 kHz (DESIGN.md §9.3). Audio thread only: an adapter copies it for the
-    /// thread that draws it.
+    /// times a second at 48 kHz (DESIGN.md §9.3). Until the first, nothing yet, at the engine's
+    /// rate, with a serial of 0. Audio thread only: an adapter copies it for the thread that draws
+    /// it.
     [[nodiscard]] const ui_model& ui() const noexcept;
 
     [[nodiscard]] const engine_config& config() const noexcept;

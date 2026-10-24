@@ -63,10 +63,10 @@ struct ui_model {
 
     // The clock, as clock_report gives it, as of the block's last frame.
     clock_state                 clock{clock_state::no_clock};
-    std::optional<sample_time>  beat_period;
+    std::optional<sample_time>  beat_period{std::nullopt};
     sample_rate                 rate{48'000U};
-    std::optional<std::int64_t> bar;   // the bar in progress
-    std::optional<std::int64_t> beat;  // its beat in progress, from 0
+    std::optional<std::int64_t> bar{std::nullopt};   // the bar in progress
+    std::optional<std::int64_t> beat{std::nullopt};  // its beat in progress, from 0
     std::int64_t                beats_per_bar{4};
 
     // The strip.

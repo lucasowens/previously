@@ -38,7 +38,8 @@ engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexce
     : config_{checked_config(config)},
       clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
       pool_{checked_tape(tape, config.rate), page_frames_for(config.rate)},
-      recorder_{pool_, config.rate, history_pages}
+      recorder_{pool_, config.rate, history_pages},
+      ui_{.rate = config.rate}
 {
 }
 
