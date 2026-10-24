@@ -480,7 +480,7 @@ TEST_CASE(
 
         const line_estimate estimate = test::estimate_planted(clock, planted_line);
 
-        CHECK(estimate.jitter == doctest::Approx(sigma).epsilon(1e-5));
+        CHECK(estimate.jitter == doctest::Approx(static_cast<double>(sigma)).epsilon(1e-5));
         CHECK(estimate.basis == placement.basis);
     }
 }
