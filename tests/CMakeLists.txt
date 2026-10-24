@@ -14,6 +14,7 @@ add_executable(previously_tests
     test_sample_time.cpp
     test_clock_tracker.cpp
     test_spsc_queue.cpp
+    test_triple_buffer.cpp
     test_dc_blocker.cpp
     test_peak_level.cpp
     test_page_pool.cpp
@@ -26,6 +27,7 @@ add_executable(previously_tests
     test_wav.cpp
     test_block_adapter.cpp
     test_rack_tape.cpp
+    test_rack_screen.cpp
 )
 
 target_link_libraries(previously_tests PRIVATE

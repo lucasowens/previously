@@ -75,7 +75,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#15)
+## Current state (after PRs #1–#16)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -101,7 +101,12 @@ however the binary is run.
   - The screen (PR #15, DESIGN §9.3): `draw()` turns a model into a 128×64 framebuffer in the
     SSD1306's page order (`display.hpp`, `framebuffer.hpp`), with our own 5×7 font (`font.hpp`).
     Its golden images are plain PBM files in `tests/golden/display/`, which the unit tests
-    compare and `make bless` rewrites. Nothing shows the screen yet.
+    compare and `make bless` rewrites.
+  - Rack's screen (PR #16, DESIGN §9.3): a 1.54" OLED's 35.05 × 17.51 mm on the panel. The module
+    hands each rebuilt model to the UI thread through a `triple_buffer` (engine), kept by the
+    module so it outlives engine rebuilds (`rack/src/screen.hpp`); the widget draws it on the
+    light layer. The module draws the panel's labels in Rack's Nunito Bold, since Rack's SVG
+    renderer draws no text. Not yet checked by the user in Rack.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -118,8 +123,6 @@ however the binary is run.
 - **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 88% now,
   61% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** the rest of the display (DESIGN §9.3): Rack's panel (a triple buffer from the audio
-  thread, the widget and the panel). Then capture and playback (§3.4, §5), then the Rack
-  controls. PR #6's closing review lists the tests each owes, and DESIGN §2.3 adds one for Rack's
-  52-page tape; the crossfade-bits test and the floor test through the seam correlation moved to
-  capture and playback.
+- **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
+  the tests each owes, and DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test
+  and the floor test through the seam correlation moved to capture and playback.

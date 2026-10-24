@@ -1,20 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- Previously placeholder panel: 10 HP (50.8 mm x 128.5 mm). Rack does not render SVG text, so
-     sections are marked with shapes:
-       top band      beat, bar and clock-state lights
+     the module draws the name and labels itself (previously_module.cpp). Sections:
+       top band      the module's name
+       light box     beat, bar and clock-state lights
        clock box     CLOCK in (left), RESET in (right), CLOCK OUT (right, filled = output)
+       screen        a 1.54" OLED's viewing window, 37.05 x 19.51 mm; the module draws its pixels
        audio box     IN L/R (left), OUT L/R (right, filled = outputs) -->
 <svg xmlns="http://www.w3.org/2000/svg" width="50.8mm" height="128.5mm" viewBox="0 0 50.8 128.5">
   <rect x="0" y="0" width="50.8" height="128.5" fill="#1d2126"/>
   <rect x="0" y="0" width="50.8" height="12" fill="#f2b632"/>
-  <circle cx="25.4" cy="6" r="3.2" fill="#1d2126"/>
-  <circle cx="25.4" cy="6" r="1.4" fill="#f2b632"/>
   <rect x="4" y="16" width="42.8" height="12" rx="2" fill="none" stroke="#8a949e" stroke-width="0.4"/>
   <rect x="4" y="32" width="22" height="34" rx="2" fill="none" stroke="#8a949e" stroke-width="0.4"/>
   <rect x="24.8" y="32" width="22" height="34" rx="2" fill="none" stroke="#8a949e" stroke-width="0.4"/>
   <rect x="24.8" y="51" width="22" height="15" rx="2" fill="#2c333b" stroke="#f2b632" stroke-width="0.4"/>
-  <rect x="4" y="86" width="22" height="34" rx="2" fill="none" stroke="#8a949e" stroke-width="0.4"/>
-  <rect x="24.8" y="86" width="22" height="34" rx="2" fill="#2c333b" stroke="#f2b632" stroke-width="0.4"/>
-  <path d="M 9 89.5 L 12 89.5" stroke="#8a949e" stroke-width="0.6"/>
-  <path d="M 30 89.5 L 33 89.5 M 31.5 88 L 33 89.5 L 31.5 91" stroke="#f2b632" stroke-width="0.6" fill="none"/>
+  <rect x="6.875" y="67.745" width="37.05" height="19.51" rx="0.5" fill="#050607"/>
+  <rect x="4" y="89" width="22" height="34" rx="2" fill="none" stroke="#8a949e" stroke-width="0.4"/>
+  <rect x="24.8" y="89" width="22" height="34" rx="2" fill="#2c333b" stroke="#f2b632" stroke-width="0.4"/>
 </svg>

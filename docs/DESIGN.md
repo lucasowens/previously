@@ -1210,7 +1210,8 @@ confidence, but nothing performance-critical depends on it.
 - Panel variant vs. header-mounted option is decided in P4 (§15).
 
 **The display, as built.** In three PRs: the UI model (PR #14), the renderer and its golden
-images, then Rack's panel. The screen has a header line, and a **history strip** below it.
+images (PR #15), and Rack's panel (PR #16). The screen has a header line, and a **history strip**
+below it.
 
 - **The header:** the clock's state, the tempo, and the bar and beat in progress.
 - **The strip, once the grid has a tempo: bars.** The last 4 whole bars and the bar in progress,
@@ -1337,6 +1338,47 @@ rows
   example above. The unit tests compare them, and `make bless` rewrites them along with the audio
   renders.
 
+**Rack's panel.** The screen is the largest 128×64 OLED that fits the 10 HP panel: a 1.54"
+SSD1309, whose controller takes the SSD1306's page order. Its pixels fill the module's active area,
+35.05 × 17.51 mm, a pixel 0.27 mm, white on the dark viewing window, 37.05 × 19.51 mm. The window
+sits between the clock and audio boxes. The audio box and its jacks move 3 mm down to make room,
+leaving 1.5 mm each side of the window. A 0.96" screen was hard to read at Rack's 100% zoom, and a
+1.3" one fits with room to spare. The next size up, 2.42" (55.01 × 27.49 mm), is wider than 10 HP.
+Rack draws no text in a panel's SVG, so the module draws the panel's name and labels itself, in
+Rack's own Nunito Bold, each at the position of the jack or light it names.
+
+- **From the audio thread to the screen.** The module keeps a triple buffer of models
+  (`triple_buffer.hpp`). It is the module's, not the engine's, so it outlives the engine's rebuilds
+  at each sample rate.
+  - On the audio thread, after a block that rebuilt the model (its serial changed), the module
+    publishes a copy: 480 bytes on a 64-bit host, 46.9 times a second at 48 kHz.
+  - On the UI thread, the widget takes the newest model when it draws. When one was published since
+    its last frame, it runs `draw()` into its own framebuffer; otherwise the framebuffer is still
+    current.
+  - Neither side waits, and nothing queues. The screen wants only the newest model, which a queue
+    such as `spsc_queue.hpp` would not give it. Say the window is dragged and the UI thread stalls
+    for a second. A queue of models fills, the audio thread drops every newer model, and when the
+    UI thread resumes it first shows the models from the start of the stall, a second old. With a
+    triple buffer, the audio thread keeps overwriting its spare slot, and the first frame after the
+    stall shows the newest model.
+  - A rate change rebuilds the engine, whose first model is empty and whose serials start again.
+    The module restarts its feed then, so that first model is published whatever its serial, and
+    the screen clears with the history.
+- **Drawing.** The widget paints on Rack's light layer, so the screen stays lit when the room is
+  dimmed. Each run of lit pixels down a column is one rectangle, so a full strip is a few hundred
+  rectangles rather than thousands, drawn without anti-aliasing so that neighbouring runs leave no
+  seams. In the module browser, where there is no module, it draws an empty model: `NO CLOCK`.
+- **Tests.** The triple buffer: the newest value wins, a value being read is never written, a seeded
+  run of 10,000 publishes and takes, and two threads passing 200,000 values, each taken whole and
+  newer than the last. The writer pauses halfway until the reader has looked, so the threads meet
+  mid-stream however they are scheduled, and the reader takes the halfway value there and the last
+  at the end. Nothing allocates. Its memory orders are argued in its
+  header rather than tested: neither the two threads nor ThreadSanitizer, which treats an atomic
+  exchange as synchronising, see them relaxed. The module's feed (`rack/src/screen.hpp`,
+  header-only like the other adapters, so the host tests reach it) publishes after the first block
+  and each block that rebuilt the model, and only then, and after a restart whatever the serial.
+  Its runs paint exactly the lit pixels. The widget itself is NanoVG, checked by eye in Rack.
+
 **Not yet:**
 - The capture length is 4 bars until there is a length control (§9.1).
 - In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too, and just after the
@@ -1344,7 +1386,6 @@ rows
   bracket offer the 4 whole bars. Capture will own those rules, and the model will ask it.
 - The firmware carries the peaks and the model, 3,432 bytes of RAM (§2.3), though the Pod has no
   display.
-- Nothing shows the screen yet: Rack's panel is the next PR.
 
 ---
 
