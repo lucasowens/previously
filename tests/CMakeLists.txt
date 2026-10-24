@@ -17,6 +17,7 @@ add_executable(previously_tests
     test_peak_level.cpp
     test_page_pool.cpp
     test_recorder.cpp
+    test_ui_model.cpp
     test_engine.cpp
     test_engine_clock.cpp
     test_engine_tape.cpp
