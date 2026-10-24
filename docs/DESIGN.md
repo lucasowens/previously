@@ -1218,8 +1218,10 @@ images, then Rack's panel. The screen has a header line, and a **history strip**
   capture takes when pressed now (§3.4), so the strip answers "if I press now, what do I get?".
   - The bar in progress fills its slot from the left. When it ends, the strip moves on a bar. Its
     end line is a prediction, so when the tempo is re-estimated its columns move, and the fill can
-    step back: from column 107 to 106 when a change from 120 to 80 BPM is confirmed, and from 112
-    to 106 at a 3× slowdown. With a steady clock it never does.
+    step back. How far depends on how much of the bar has passed when the change is confirmed. In
+    the test's case, 4 bars at 120 BPM and then a slower tempo from the bar line, confirmed by the
+    second slower pulse, it steps back from column 107 to 106 for 80 BPM and from 112 to 106 for a
+    3× slowdown. With a steady clock it never does.
   - Every bar fills its slot, whatever its length, so a change of tempo squeezes none off the
     screen. A column starts at the first frame at or after its share of the bar.
   - Just after the clock starts, the earliest slots hold bars from before it, which the grid
