@@ -1337,6 +1337,38 @@ rows
   example above. The unit tests compare them, and `make bless` rewrites them along with the audio
   renders.
 
+**Rack's panel.** The screen sits in the 20 mm between the clock and audio boxes, at the size of a
+1.3" SH1106 OLED's active area, 29.42 × 14.70 mm: a pixel is 0.23 mm, as on that hardware. Its
+pixels are white, on a dark window 1 mm wider all round. A 0.96" screen (21.7 × 10.9 mm) is hard to
+read at Rack's 100% zoom, and a 1.54" one (35.1 × 17.5 mm) leaves its window a quarter of a
+millimetre from the boxes.
+
+- **From the audio thread to the screen.** The module keeps a triple buffer of models
+  (`triple_buffer.hpp`). It is the module's, not the engine's, so it outlives the engine's rebuilds
+  at each sample rate.
+  - On the audio thread, after a block that rebuilt the model (its serial changed), the module
+    publishes a copy: 480 bytes on a 64-bit host, 46.9 times a second at 48 kHz.
+  - On the UI thread, the widget takes the newest model when it draws. When the serial differs from
+    the one it last drew, it runs `draw()` into its own framebuffer; otherwise the framebuffer is
+    still current.
+  - Neither side waits, and nothing queues. The screen wants only the newest model, which a queue
+    such as `spsc_queue.hpp` would not give it. Say the window is dragged and the UI thread stalls
+    for a second. A queue of models fills, the audio thread drops every newer model, and when the
+    UI thread resumes it first shows the models from the start of the stall, a second old. With a
+    triple buffer, the audio thread keeps overwriting its spare slot, and the first frame after the
+    stall shows the newest model.
+  - A rate change rebuilds the engine, whose first model is empty. The module publishes it too, so
+    the screen clears with the history.
+- **Drawing.** The widget paints on Rack's light layer, so the screen stays lit when the room is
+  dimmed. Each column's run of lit pixels is one rectangle, so a full strip is a few hundred
+  rectangles rather than thousands. In the module browser, where there is no module, it draws an
+  empty model: `NO CLOCK`.
+- **Tests.** The triple buffer: the newest model wins, a model being read is never written, none
+  tears under two threads, and nothing allocates. The module's feed (`rack/src/screen.hpp`,
+  header-only like the other adapters, so the host tests reach it) publishes when the serial
+  changes and only then, across an engine rebuild too; and its runs cover exactly the lit pixels.
+  The widget itself is NanoVG, checked by eye in Rack.
+
 **Not yet:**
 - The capture length is 4 bars until there is a length control (§9.1).
 - In the last ¼ beat before a bar line, CAPTURE takes the bar in progress too, and just after the
