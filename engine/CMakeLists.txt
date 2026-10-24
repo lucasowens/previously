@@ -2,6 +2,7 @@
 
 add_library(previously_engine STATIC
     src/bar_line.cpp
+    src/capture.cpp
     src/captured_loop.cpp
     src/clock_tracker.cpp
     src/dc_blocker.cpp

@@ -4,6 +4,7 @@
 #include "previously/engine.hpp"
 
 #include "block_adapter.hpp"
+#include "capture_fixtures.hpp"
 #include "known.hpp"
 #include "realtime_guard.hpp"
 #include "tape.hpp"
@@ -184,6 +185,84 @@ TEST_CASE("at 768 kHz an engine takes the full tape, with fewer and longer pages
           audio_engine.history().page_at(samples{0}));
     CHECK(same_bits(known(audio_engine.history().frame_at(samples{524'288})),
                     feed.input.dc_blocked[524'288]));
+}
+
+/// Whether every page from the history's oldest to its newest was recorded: no hole.
+[[nodiscard]] bool history_is_whole(const recorder& history, samples page_frames)
+{
+    const std::int64_t oldest = history.begin().value() / page_frames.value();
+    const std::int64_t newest = (history.end().value() - 1) / page_frames.value();
+
+    for (std::int64_t number = oldest; number <= newest; ++number) {
+        if (!history.page_at(samples{number * page_frames.value()})) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+TEST_CASE("at 768 kHz a capture needing 7 pages is refused, one needing 6 is held, and the history "
+          "stays whole")
+{
+    // 52 pages: the history's 46 and 6 more (DESIGN.md §2.3). A page is 2^19 frames. Each press
+    // is 0.3 beat after its line, so the run is the window, 50 ms each side, and half a pulse.
+    constexpr sample_rate   rate_768k{768'000U};
+    constexpr samples       page_frames{524'288};
+    constexpr engine_config config{.rate = rate_768k, .max_block_frames = 49'152};
+    constexpr std::int64_t  pulses_per_bar = 16;
+
+    tape                          memory;
+    const std::span<stereo_frame> whole = memory.for_rate(rate_768k);
+
+    REQUIRE(whole.size() == tape::full_frames);
+
+    SUBCASE("7 pages: refused")
+    {
+        // 120 BPM, a bar 1,536,000 frames. Bars 2 and 3 are [3,072,000, 6,144,000): with the
+        // margins and the reserve, [3,033,600, 6,230,400), pages 5 to 11.
+        test::clocked_engine rig{config, whole};
+        const std::int64_t   pulse = 96'000;
+
+        rig.steady_clock(test::at_sample(0), test::at_sample(pulse), 40 * pulses_per_bar);
+        rig.press(test::at_sample((4 * pulses_per_bar * pulse) + 28'800), capture_bars::two);
+        rig.run_until(samples{(4 * pulses_per_bar * pulse) + 28'801});
+
+        CHECK(rig.target().loop().outcome.result == capture_result::pool_full);
+        CHECK(rig.target().slot().empty());
+
+        // Had it been held, then once page 11 left the history, as page 57 started, the history's
+        // 45 whole pages and the loop's 7 would have been all 52, and page 57 a hole.
+        rig.run_until(samples{(57 * page_frames.value()) + 1});
+
+        CHECK(history_is_whole(rig.target().history(), page_frames));
+        test::check_holders(rig.target());
+    }
+
+    SUBCASE("6 pages: held, and the history laps with every page in use")
+    {
+        // 80 BPM, a bar 2,304,000 frames. Bar 2 is [4,608,000, 6,912,000): with the margins and
+        // the reserve, [4,569,600, 7,022,400), pages 8 to 13.
+        test::clocked_engine rig{config, whole};
+        const std::int64_t   pulse = 144'000;
+
+        rig.steady_clock(test::at_sample(0), test::at_sample(pulse), 30 * pulses_per_bar);
+        rig.press(test::at_sample((3 * pulses_per_bar * pulse) + 43'200), capture_bars::one);
+        rig.run_until(samples{(3 * pulses_per_bar * pulse) + 43'201});
+
+        REQUIRE(rig.target().loop().outcome.result == capture_result::committed);
+        CHECK(rig.target().slot().first_page() == 8);
+        CHECK(rig.target().slot().page_count() == 6U);
+
+        // Once its pages have left the history, the pool's 52 are the history's 46 and its 6.
+        rig.run_until(samples{60 * page_frames.value()});
+
+        CHECK(rig.target().loop().slot == slot_state::final);
+        CHECK(rig.target().slot().pages().size() == 6U);
+        CHECK(rig.target().pages().free_count() == 0U);
+        CHECK(history_is_whole(rig.target().history(), page_frames));
+        test::check_holders(rig.target());
+    }
 }
 
 }  // namespace

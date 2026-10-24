@@ -8,6 +8,8 @@
 #pragma once
 
 #include "previously/audio_block.hpp"
+#include "previously/capture.hpp"
+#include "previously/captured_loop.hpp"
 #include "previously/clock_events.hpp"
 #include "previously/clock_tracker.hpp"
 #include "previously/command.hpp"
@@ -29,6 +31,12 @@ namespace previously {
 struct engine_config {
     sample_rate rate{48'000U};
     std::size_t max_block_frames{48};
+
+    /// L_in: how much later the input reaches the engine than the jack (DESIGN.md §3.5). Capture
+    /// cuts each bar line this much later, so a window lines up with the clock edges as they
+    /// arrived at the jacks. Not negative; 0 in Rack, whose blocks bring each block's audio with
+    /// its own edges.
+    sample_time input_latency{sample_time::from_samples(samples{0})};
 };
 
 class engine {
@@ -44,7 +52,7 @@ public:
     static constexpr std::size_t history_pages = recorder::max_history_pages;
 
     /// A capture holds at most 47 pages, in flight or final (DESIGN.md §2.3).
-    static constexpr std::size_t max_capture_pages = 47;
+    static constexpr std::size_t max_capture_pages = captured_loop::max_pages;
 
     // P1 at its fullest: two slots, one of them being replaced, and one capture in flight.
     static_assert((3 * max_capture_pages) + history_pages <= page_pool::max_pages,
@@ -67,9 +75,11 @@ public:
     /// half of clock_tracker::double_trigger_spacing apart. 3,072 frames at 48 kHz.
     [[nodiscard]] static std::size_t max_block_frames(sample_rate rate) noexcept;
 
-    /// Audio thread. Applies pending commands, feeds the block's clock events to the grid, then
-    /// processes the audio. Events must be in time order with offsets inside the block.
-    /// Realtime-safe: no allocation, no locks, bounded time.
+    /// Audio thread. Applies pending commands, feeds the block's clock events to the grid and its
+    /// capture presses to capture, then processes the audio. Events must be in time order with
+    /// offsets inside the block. At the same moment, an adapter puts a press after the edges, so
+    /// that the press sees them (DESIGN.md §10.1). Realtime-safe: no allocation, no locks,
+    /// bounded time.
     void process(const audio_block& block, std::span<const clock_event> events = {}) noexcept;
 
     /// Any single non-audio thread. Queues a command for the start of the next block.
@@ -92,6 +102,20 @@ public:
     /// rate, with a serial of 0. Audio thread only: an adapter copies it for the thread that draws
     /// it.
     [[nodiscard]] const ui_model& ui() const noexcept;
+
+    /// The loop report as of the end of the last block (DESIGN.md §3.4): the slot's state,
+    /// whether a capture is waiting for its line, and what became of the latest press. Audio
+    /// thread only.
+    [[nodiscard]] const loop_report& loop() const noexcept;
+
+    /// The loop in the slot: its window, its bar lines and its pages. Audio thread only.
+    [[nodiscard]] const captured_loop& slot() const noexcept;
+
+    /// A capture waiting for its end line, or an empty loop. Audio thread only.
+    [[nodiscard]] const captured_loop& waiting() const noexcept;
+
+    /// The pool every page is held through, to see who holds what. Audio thread only.
+    [[nodiscard]] const page_pool& pages() const noexcept;
 
     [[nodiscard]] const engine_config& config() const noexcept;
 
@@ -117,6 +141,7 @@ private:
     // The tape. The pool is declared before everything that holds its pages, so it outlives them.
     page_pool pool_;
     recorder  recorder_;
+    capture   capture_;
 
     ui_model ui_;
 };

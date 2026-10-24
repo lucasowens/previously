@@ -9,6 +9,7 @@ add_executable(previously_tests
     sanitizer_options.cpp
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
+    capture_fixtures.cpp
     golden_image.cpp
     planted_clock.cpp
     test_units.cpp
@@ -27,6 +28,8 @@ add_executable(previously_tests
     test_engine_clock.cpp
     test_engine_tape.cpp
     test_captured_loop.cpp
+    test_capture.cpp
+    test_capture_floors.cpp
     test_wav.cpp
     test_block_adapter.cpp
     test_rack_tape.cpp

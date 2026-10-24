@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Previously — the engine: commands, the clock grid, the display's model, and (for now) a
-// sample-exact passthrough.
+// Previously — the engine: commands, the clock grid, capture, the display's model, and (for now)
+// a sample-exact passthrough.
 
 #include "previously/engine.hpp"
 
@@ -20,6 +20,7 @@ namespace {
     expects(config.rate.hz() > 0U);
     expects(config.max_block_frames > 0U);
     expects(config.max_block_frames <= engine::max_block_frames(config.rate));
+    expects(config.input_latency >= sample_time{});
 
     return config;
 }
@@ -39,6 +40,7 @@ engine::engine(const engine_config& config, std::span<stereo_frame> tape) noexce
       clock_tracker_{clock_tracker_config::gate(config.rate), clock_history_},
       pool_{checked_tape(tape, config.rate), page_frames_for(config.rate)},
       recorder_{pool_, config.rate, history_pages},
+      capture_{pool_, recorder_, config.rate, config.input_latency},
       ui_{.rate = config.rate}
 {
 }
@@ -92,6 +94,12 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
             case clock_event_type::reset:
                 clock_tracker_.reset(when);
                 break;
+
+            case clock_event_type::capture:
+                // The grid as it is at the press, with every fill-in due by then committed.
+                clock_tracker_.advance(when);
+                capture_.press(when, event.bars, clock_tracker_);
+                break;
         }
     }
 
@@ -101,6 +109,10 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
     std::ranges::copy(block.in_right, block.out_right.begin());
 
     recorder_.record(block.in_left, block.in_right);
+
+    // Once the block is recorded: the pages a capture holds as the recorder takes them, and lines
+    // that arrived or became final during the block.
+    capture_.follow(clock_tracker_);
 
     sample_clock_ += frames;
 
@@ -140,6 +152,26 @@ const ui_model& engine::ui() const noexcept
     return ui_;
 }
 
+const loop_report& engine::loop() const noexcept
+{
+    return capture_.report();
+}
+
+const captured_loop& engine::slot() const noexcept
+{
+    return capture_.slot();
+}
+
+const captured_loop& engine::waiting() const noexcept
+{
+    return capture_.waiting();
+}
+
+const page_pool& engine::pages() const noexcept
+{
+    return pool_;
+}
+
 const engine_config& engine::config() const noexcept
 {
     return config_;
@@ -161,10 +193,13 @@ void engine::apply_pending_commands(sample_time block_start) noexcept
 
 void engine::apply(const command& request, sample_time block_start) noexcept
 {
-    // A switch, even with one case: as command_type grows, -Wswitch flags any unhandled command.
-    switch (request.type) {  // NOLINT(readability-trivial-switch)
+    switch (request.type) {
         case command_type::reset_grid:
             clock_tracker_.reset(block_start);
+            break;
+
+        case command_type::capture:
+            capture_.press(block_start, request.bars, clock_tracker_);
             break;
     }
 }

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Previously — engine: clock events going in, and the clock grid's report coming out.
 //
-// In: each audio block carries the clock and reset edges that happened during it, timestamped
-// relative to the block's first frame with sub-sample precision.
+// In: each audio block carries the clock, reset and capture edges that happened during it,
+// timestamped relative to the block's first frame with sub-sample precision.
 //
 // Out: after each block the engine reports the grid: tempo, lock state, where we are in the bar,
 // and every grid pulse that fell inside the block. Adapters use the pulses for clock out and the
@@ -10,6 +10,7 @@
 
 #pragma once
 
+#include "previously/capture_bars.hpp"
 #include "previously/clock_tracker.hpp"
 #include "previously/sample_time.hpp"
 
@@ -21,14 +22,16 @@
 namespace previously {
 
 enum class clock_event_type : std::uint8_t {
-    pulse,  // a rising edge on the clock input
-    reset,  // a rising edge on the reset input
+    pulse,    // a rising edge on the clock input
+    reset,    // a rising edge on the reset input
+    capture,  // a CAPTURE press, from the button or the gate input (DESIGN.md §3.4)
 };
 
 /// One edge during a block. `offset` is measured from the block's first frame and lies in
 /// [0, frame count). Events within a block are delivered in time order.
 struct clock_event {
     clock_event_type type{clock_event_type::pulse};
+    capture_bars     bars{capture_bars::four};  // what a capture asks for; other edges ignore it
     sample_time      offset;
 };
 
