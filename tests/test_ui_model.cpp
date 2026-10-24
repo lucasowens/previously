@@ -629,6 +629,17 @@ TEST_CASE("at the fastest tempo, a bucket spans several columns and each of them
     check_bars_view(model, played);
 }
 
+/// A moment the bar in progress's fill stepped back: the block's end, and the columns before and
+/// after. At namespace scope, since a local class cannot define a friend.
+struct step_back {
+    std::int64_t frame;
+    std::size_t  from;
+    std::size_t  to;
+
+    [[nodiscard]] friend constexpr bool operator==(const step_back&,
+                                                   const step_back&) noexcept = default;
+};
+
 TEST_CASE("the bar in progress's fill steps back when its end is re-estimated, and only then")
 {
     // The bar in progress ends on a predicted line. When the tempo is re-estimated the prediction
@@ -636,14 +647,6 @@ TEST_CASE("the bar in progress's fill steps back when its end is re-estimated, a
     // clock it never does. Every model on the way is built, block by block, from 3 bars in, with no
     // tape: the fill comes from the grid alone. Each step back is then played again with a tape,
     // and that model checked in full against the grid and the signal.
-    struct step_back {
-        std::int64_t frame;
-        std::size_t  from;
-        std::size_t  to;
-
-        bool operator==(const step_back&) const = default;
-    };
-
     struct run {
         std::string               name;
         std::vector<std::int64_t> pulses;
