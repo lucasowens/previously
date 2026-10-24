@@ -10,9 +10,11 @@ add_executable(previously_tests
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
     golden_image.cpp
+    planted_clock.cpp
     test_units.cpp
     test_sample_time.cpp
     test_clock_tracker.cpp
+    test_bar_line.cpp
     test_spsc_queue.cpp
     test_triple_buffer.cpp
     test_dc_blocker.cpp
