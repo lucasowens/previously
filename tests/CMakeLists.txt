@@ -10,9 +10,11 @@ add_executable(previously_tests
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
     golden_image.cpp
+    planted_clock.cpp
     test_units.cpp
     test_sample_time.cpp
     test_clock_tracker.cpp
+    test_bar_line.cpp
     test_spsc_queue.cpp
     test_triple_buffer.cpp
     test_dc_blocker.cpp
@@ -50,6 +52,29 @@ target_include_directories(previously_tests PRIVATE ${PROJECT_SOURCE_DIR}/rack/s
 previously_apply_strict_options(previously_tests)
 
 add_test(NAME unit COMMAND previously_tests)
+
+# The bar-line estimate's seeded properties, at PR #6's seed counts (DESIGN.md §3.4): over a
+# million estimates, which take about a minute under the sanitizers. They run in their own
+# executable, registered only in builds without sanitizers: `make seeds` runs them from the release
+# preset, and `make test` and CI run `make seeds`.
+add_executable(previously_seed_tests
+    test_main.cpp
+    planted_clock.cpp
+    test_bar_line_seeds.cpp
+)
+
+target_link_libraries(previously_seed_tests PRIVATE
+    previously::engine
+    previously::host_support
+    doctest
+)
+
+previously_apply_strict_options(previously_seed_tests)
+
+if(NOT PREVIOUSLY_SANITIZE)
+    add_test(NAME bar_line_seeds COMMAND previously_seed_tests)
+    set_tests_properties(bar_line_seeds PROPERTIES LABELS seeds)
+endif()
 
 # T3: golden render regression. Renders every stimulus in golden/stimulus and compares the result
 # byte-for-byte with golden/expected. The unit tests compare the screen's golden images in

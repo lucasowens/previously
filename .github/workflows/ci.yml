@@ -64,6 +64,12 @@ jobs:
           cmake --build --preset dev
           ctest --preset dev
 
+      - name: Seeded properties (optimized)
+        env:
+          CC: ${{ matrix.compiler.cc }}
+          CXX: ${{ matrix.compiler.cxx }}
+        run: make seeds
+
       - name: Rack plugin (Linux SDK)
         if: matrix.compiler.cc == 'gcc-14'
         env:

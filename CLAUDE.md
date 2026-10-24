@@ -12,7 +12,8 @@ Read [docs/DESIGN.md](docs/DESIGN.md) (spec and roadmap, §14 has the P1 progres
 | Command | What it does |
 |---|---|
 | `make quick` | Build and run host tests (ASan + UBSan) |
-| `make test` | The full gate: format check, tests, clang-tidy, cppcheck, Rack plugin, firmware |
+| `make seeds` | Seeded properties too slow for the sanitizers, from an optimized build (part of `make test`) |
+| `make test` | The full gate: format check, tests, seeded properties, clang-tidy, cppcheck, Rack plugin, firmware |
 | `make format` | clang-format everything (LLVM 23 is pinned; the scripts refuse other versions) |
 | `make rack-install` | Build and install the plugin into the user's Rack folder. Rack must be restarted to load it. |
 | `make bless` | Approve new golden renders and screen images. Only after the change is understood. |
@@ -75,7 +76,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#16)
+## Current state (after PRs #1–#17)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -106,7 +107,12 @@ however the binary is run.
     hands each rebuilt model to the UI thread through a `triple_buffer` (engine), kept by the
     module so it outlives engine rebuilds (`rack/src/screen.hpp`); the widget draws it on the
     light layer. The module draws the panel's labels in Rack's Nunito Bold, since Rack's SVG
-    renderer draws no text. Not yet checked by the user in Rack.
+    renderer draws no text. Verified in VCV Rack 2 Pro by the user.
+  - The bar-line estimate (PR #17, DESIGN §3.4 "Where a bar line is", `bar_line.hpp`): where a
+    past bar line was, from the tracker's edges, as PR #6 designed it. Host only: capture will
+    call it. Its tests carry PR #6's closing review: the 132 scenarios (recovered from its probe),
+    and the jitter rows at their seed counts, which run optimized in `make seeds`. Open: whether
+    c_within should skip fill-ins (DESIGN, "As built").
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -123,6 +129,7 @@ however the binary is run.
 - **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 88% now,
   61% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
   report the trade-off.
-- **Next:** capture and playback (§3.4, §5), then the Rack controls. PR #6's closing review lists
-  the tests each owes, and DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test
-  and the floor test through the seam correlation moved to capture and playback.
+- **Next:** capture (§3.4: which bars, shortening and refusal, pinning, presses in flight), then
+  playback (§5, §3.6), then the Rack controls. PR #6's closing review lists the tests each owes,
+  and DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
+  through the seam correlation belong to playback.

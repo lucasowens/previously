@@ -5,13 +5,14 @@
 
 RACK_DIR ?= $(CURDIR)/.deps/Rack-SDK
 
-.PHONY: help setup hooks build quick test lint format format-check tidy cppcheck \
+.PHONY: help setup hooks build quick seeds test lint format format-check tidy cppcheck \
         rack rack-install firmware bless clean
 
 help:
 	@echo "make setup         init submodules, fetch the Rack SDK, install git hooks"
 	@echo "make test          the full host gate (T0-T4): build all targets, lint, run every test"
 	@echo "make quick         build and run the host tests only (fast inner loop)"
+	@echo "make seeds         the seeded properties, from an optimized build (part of make test)"
 	@echo "make lint          format-check + clang-tidy + cppcheck"
 	@echo "make format        reformat every project source in place"
 	@echo "make rack          build the VCV Rack plugin (RACK_DIR=... to use a Rack source tree)"
@@ -34,8 +35,15 @@ build:
 quick: build
 	ctest --preset dev
 
-test: format-check quick tidy cppcheck rack firmware
-	@echo "host gate passed: format, build, tests, clang-tidy, cppcheck, rack, firmware"
+# Seeded properties too slow for the sanitizers. The release preset's other tests are left out
+# (issue #12).
+seeds:
+	cmake --preset release
+	cmake --build --preset release --target previously_seed_tests
+	ctest --preset release -L seeds --output-on-failure
+
+test: format-check quick seeds tidy cppcheck rack firmware
+	@echo "host gate passed: format, build, tests, seeded properties, clang-tidy, cppcheck, rack, firmware"
 
 lint: format-check tidy cppcheck
 
