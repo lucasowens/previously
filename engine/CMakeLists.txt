@@ -1,6 +1,7 @@
 # The Previously engine: pure C++20, no platform headers. Shared verbatim by every target.
 
 add_library(previously_engine STATIC
+    src/bar_line.cpp
     src/clock_tracker.cpp
     src/dc_blocker.cpp
     src/display.cpp
