@@ -101,8 +101,8 @@ private:
 };
 
 /// The edges around a line, as residuals from the straight line through the line's edge at the
-/// period, in samples. Each is exact in ticks before it becomes a float. Offsets run from the
-/// first pulse read before the line, at most 64 back, to 8 after it.
+/// period: exact in ticks, and as floats in samples for the side fits. Offsets run from the first
+/// pulse read before the line, at most 64 back, to 8 after it.
 class residual_window {
 public:
     residual_window(std::span<const pulse_edge> edges,
@@ -121,6 +121,7 @@ public:
             const sample_time on_line =
                 origin + sample_time::from_ticks(period.ticks() * std::int64_t{offset});
 
+            exact_[slot(offset)]     = (edge.time - on_line).ticks();
             residuals_[slot(offset)] = (edge.time - on_line).to_samples_float();
             filled_in_[slot(offset)] = edge.filled_in;
         }
@@ -134,6 +135,12 @@ public:
     [[nodiscard]] float at(int offset) const noexcept
     {
         return residuals_[slot(offset)];
+    }
+
+    /// The residual at `offset`, exactly, in ticks.
+    [[nodiscard]] std::int64_t ticks_at(int offset) const noexcept
+    {
+        return exact_[slot(offset)];
     }
 
     [[nodiscard]] bool filled_in(int offset) const noexcept
@@ -150,9 +157,10 @@ private:
         return static_cast<std::size_t>(std::ptrdiff_t{offset} + std::ptrdiff_t{before_most});
     }
 
-    int                                                           before_;
-    std::array<float, line_pulses_before + line_pulses_after + 1> residuals_{};
-    std::array<bool, line_pulses_before + line_pulses_after + 1>  filled_in_{};
+    int                                                                  before_;
+    std::array<std::int64_t, line_pulses_before + line_pulses_after + 1> exact_{};
+    std::array<float, line_pulses_before + line_pulses_after + 1>        residuals_{};
+    std::array<bool, line_pulses_before + line_pulses_after + 1>         filled_in_{};
 };
 
 struct side_fit {
@@ -232,8 +240,13 @@ struct jitter_estimate {
             continue;
         }
 
-        differences.push(window.at(j + 2) - (3.0F * window.at(j + 1)) + (3.0F * window.at(j)) -
-                         window.at(j - 1));
+        // In ticks, exactly, and only then a float. Far from the line, after a tempo change at a
+        // slow clock, a residual can be millions of samples, beyond a float's sub-sample
+        // precision; their third difference is not.
+        const std::int64_t third = window.ticks_at(j + 2) - (3 * window.ticks_at(j + 1)) +
+                                   (3 * window.ticks_at(j)) - window.ticks_at(j - 1);
+
+        differences.push(sample_time::from_ticks(third).to_samples_float());
     }
 
     const float middle = differences.median();
@@ -266,7 +279,10 @@ struct curvature_estimate {
             const int j = toward * a;
 
             if (!touches_fill_in(window, j - 1, j + 1)) {
-                differences.push(window.at(j + 1) - (2.0F * window.at(j)) + window.at(j - 1));
+                const std::int64_t second =
+                    window.ticks_at(j + 1) - (2 * window.ticks_at(j)) + window.ticks_at(j - 1);
+
+                differences.push(sample_time::from_ticks(second).to_samples_float());
             }
         }
     }
@@ -325,6 +341,7 @@ estimate_line(std::span<const pulse_edge> edges, std::size_t line, sample_time p
     const curvature_estimate   estimated = curvature_within(window);
     const std::optional<float> within    = estimated.curvature;
 
+    estimate.curvature_within = within.value_or(0.0F);
     estimate.curvature_values = estimated.values;
 
     bool curved = false;

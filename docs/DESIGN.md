@@ -565,7 +565,11 @@ estimated from the edges *x* of the 8 pulses on each side:
 
 - Residuals are taken from the straight line through *x_i* at the tracker's period. They are
   computed exactly, in Q47.16 ticks.
-- The fits run in `float` on those residuals.
+- The third and second differences, for *σ̂* and *c_within*, are taken in ticks too, and only then
+  made `float`. After a tempo change on a slow clock, a residual far from the line can be
+  millions of samples, beyond a float's sub-sample precision. Their differences are not, so *σ̂*
+  is exact at any tempo.
+- The side fits run in `float` on the residuals within 8 pulses of the line.
 - The result goes back into ticks, rounded to the nearest tick.
 - Window edges then round to the nearest sample, halves up, as above.
 
@@ -688,7 +692,7 @@ The other notes:
     it planted edges directly, as PR #6's probe did.
 - **What it returns:** the estimated time; which step decided it (a short history, too few jitter
   values, on a straight line, repaired, or kept); *σ̂* and the number of third differences it came
-  from; and, when step 3 ran, the number of second differences *c_within* came from.
+  from; and, when step 3 ran, *c_within* and the number of second differences it came from.
 - **Half a period**, in step 4, is half the tracker's pulse period: the one the residuals are taken
   from. The probe used half the spacing of the line's two neighbours. Run through the real
   tracker, with its own period, all 132 scenarios come out as the table says.

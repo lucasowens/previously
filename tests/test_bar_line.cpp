@@ -517,6 +517,88 @@ TEST_CASE(
     CHECK(test::estimate_planted(clock, planted_line, filled_in).curvature_values == 9);
 }
 
+TEST_CASE("sigma is exact at any tempo: the same at periods of 6,000 to 192,000 samples")
+{
+    // A gate clock with its tempo doubled or halved 2 pulses before the line. Measured from the
+    // tracker's new period, the residuals far from the line reach 64 periods: millions of samples
+    // at the slowest clock the tracker takes, beyond a float's sub-sample precision, where sigma
+    // read 0. Its third differences are taken in ticks, so the jitter's are the same integers at
+    // every period, and so is sigma.
+    std::optional<float> first_sigma;
+
+    for (const std::int64_t period : {6'000, 36'000, 192'000}) {
+        for (const double ratio : {2.0, 0.5}) {
+            CAPTURE(period);
+            CAPTURE(ratio);
+
+            const auto changed = static_cast<std::int64_t>(static_cast<double>(period) * ratio);
+            test::test_noise noise{1};
+
+            std::vector<pulse_edge> edges;
+            std::int64_t            grid = 1'000;
+
+            // The line is edge 64, and the tempo changes at edge 62.
+            for (int j = 0; j <= 72; ++j) {
+                const double jitter = 0.005 * noise.gaussian();
+
+                edges.push_back(pulse_edge{
+                    .time = sample_time::from_samples(samples{grid}) + to_time(jitter),
+                });
+                grid += j + 1 >= 62 ? changed : period;
+            }
+
+            const line_estimate estimate =
+                estimate_line(std::span<const pulse_edge>{edges},
+                              64,
+                              sample_time::from_samples(samples{changed}));
+
+            CHECK(estimate.jitter > 0.002F);
+            CHECK(estimate.jitter < 0.01F);
+
+            if (first_sigma) {
+                CHECK(estimate.jitter == *first_sigma);
+            }
+            else {
+                first_sigma = estimate.jitter;
+            }
+        }
+    }
+}
+
+TEST_CASE("the curvature within the sides is exact at any tempo")
+{
+    // A parabola, intervals growing by 1 + 2^-10 samples a pulse, exactly 65,600 ticks, so
+    // c_within is 0.5 + 2^-11. Its residuals are taken at half the clock's period, as just after
+    // a tempo change, so 8 pulses from the line they are 8 half-periods: 24,000 samples at a
+    // 6,000-sample period and 768,000 at the slowest the tracker takes, where a float holds them
+    // to 2^-10 and 2^-5 of a sample. The second differences are taken in ticks, so c_within is
+    // exact. A hiccup on the line makes step 3 run.
+    for (const std::int64_t period : {6'000, 192'000}) {
+        CAPTURE(period);
+
+        std::vector<pulse_edge> edges;
+
+        for (std::int64_t j = 0; j <= 72; ++j) {
+            const std::int64_t u    = j - 64;
+            const double       bent = (0.5 + 0x1p-11) * static_cast<double>(u * u);
+
+            edges.push_back(pulse_edge{
+                .time = sample_time::from_samples(samples{1'000 + (j * period)}) + to_time(bent),
+            });
+        }
+
+        edges[64].time += to_time(1'000.0);
+
+        const line_estimate estimate =
+            estimate_line(std::span<const pulse_edge>{edges},
+                          64,
+                          sample_time::from_samples(samples{period / 2}));
+
+        CHECK(estimate.curvature_values == 12);
+        CHECK(estimate.curvature_within == 0.5F + 0x1p-11F);
+    }
+}
+
 // Through the tracker.
 
 TEST_CASE("a line is final once its edge and the 8 pulses after it are recorded, and not before")
