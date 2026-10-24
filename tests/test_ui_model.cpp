@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -89,20 +90,51 @@ struct test_signal {
 
 /// Noise whose loudness steps down 6 dB every 3,000 frames, from full scale to -48 dB and round
 /// again, so neighbouring columns differ. The right channel runs four steps behind the left.
+///
+/// The tests play many minutes of it, so it comes from a linear congruential generator rather than
+/// test::stereo_noise, whose generator and its own DC blocking cost several times as much in an
+/// unoptimized, sanitized build. The steps are powers of two, so scaling is exact.
 [[nodiscard]] test_signal stepped_noise(std::int64_t frames)
 {
-    const test::stereo_noise noise{static_cast<std::size_t>(frames), rate_48k};
-    test_signal              signal{.left = noise.left, .right = noise.right, .dc_blocked = {}};
+    const auto  count = static_cast<std::size_t>(frames);
+    test_signal signal{
+        .left       = std::vector<float>(count),
+        .right      = std::vector<float>(count),
+        .dc_blocked = {},
+    };
 
-    for (std::size_t i = 0; i < signal.left.size(); ++i) {
-        const auto step = static_cast<int>(i / 3'000U);
+    constexpr std::array<float, 9>
+        steps{1.0F, 0x1p-1F, 0x1p-2F, 0x1p-3F, 0x1p-4F, 0x1p-5F, 0x1p-6F, 0x1p-7F, 0x1p-8F};
 
-        signal.left[i]  = std::ldexp(signal.left[i], -(step % 9));
-        signal.right[i] = std::ldexp(signal.right[i], -((step + 4) % 9));
+    // Numerical Recipes' constants. The top 24 bits are a uniform sample, here in [-1, 1).
+    std::uint32_t state = 1'234U;
+
+    const auto next = [&state] {
+        state = (state * 1'664'525U) + 1'013'904'223U;
+        return (static_cast<float>(state >> 8U) * 0x1p-23F) - 1.0F;
+    };
+
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t step = i / 3'000U;
+
+        signal.left[i]  = next() * steps[step % steps.size()];
+        signal.right[i] = next() * steps[(step + 4) % steps.size()];
     }
 
     signal.dc_blocked = test::dc_block(signal.left, signal.right, rate_48k);
     return signal;
+}
+
+/// Silence: for a scene with no tape, where the signal is never read.
+[[nodiscard]] test_signal silent_signal(std::int64_t frames)
+{
+    const auto count = static_cast<std::size_t>(frames);
+
+    return test_signal{
+        .left       = std::vector<float>(count),
+        .right      = std::vector<float>(count),
+        .dc_blocked = std::vector<stereo_frame>(count, stereo_frame{.left = 0.0F, .right = 0.0F}),
+    };
 }
 
 /// Silence, but for one frame in the left channel at level 14 (-6 dBFS). After silence the DC
@@ -131,11 +163,14 @@ public:
     {
     }
 
-    scene(test_signal signal, std::vector<std::int64_t> pulses)
+    /// `signal`, a clock edge at each of `pulses`, and a tape of `tape_pages`: the history's, or
+    /// none, when a test needs only the grid's side of the model and should not pay for the tape.
+    scene(test_signal               signal,
+          std::vector<std::int64_t> pulses,
+          std::size_t               tape_pages = engine::history_pages)
         : signal_{std::move(signal)},
           pulses_{std::move(pulses)},
-          tape_(engine::history_pages *
-                static_cast<std::size_t>(page_frames_for(rate_48k).value())),
+          tape_(tape_pages * static_cast<std::size_t>(page_frames_for(rate_48k).value())),
           pool_{tape_, page_frames_for(rate_48k)},
           audit_{pool_},
           history_{pool_, rate_48k, engine::history_pages}
@@ -594,6 +629,96 @@ TEST_CASE("at the fastest tempo, a bucket spans several columns and each of them
     check_bars_view(model, played);
 }
 
+TEST_CASE("the bar in progress's fill steps back when its end is re-estimated, and only then")
+{
+    // The bar in progress ends on a predicted line. When the tempo is re-estimated the prediction
+    // moves, every column of that bar moves with it, and the fill can step back. With a steady
+    // clock it never does. Every model on the way is built, block by block, from 3 bars in, with no
+    // tape: the fill comes from the grid alone. Each step back is then played again with a tape,
+    // and that model checked in full against the grid and the signal.
+    struct step_back {
+        std::int64_t frame;
+        std::size_t  from;
+        std::size_t  to;
+
+        bool operator==(const step_back&) const = default;
+    };
+
+    struct run {
+        std::string               name;
+        std::vector<std::int64_t> pulses;
+        std::vector<step_back>    expected;
+    };
+
+    // Two bars past 4 bars of 120 BPM and a change to 80 BPM, whose bar is 144,000 frames.
+    constexpr std::int64_t slower_bar = 144'000;
+    constexpr std::int64_t until      = (4 * bar_frames) + (2 * slower_bar);
+
+    // 4 bars at 120 BPM, then slower: a pulse every 9,000 frames (80 BPM), or 18,000 (40 BPM).
+    const auto slowing = [](std::int64_t slower_pulse) {
+        std::vector<std::int64_t>       pulses = steady_pulses(0, pulse_frames, 4 * bar_frames);
+        const std::vector<std::int64_t> slower = steady_pulses(4 * bar_frames, slower_pulse, until);
+
+        pulses.insert(pulses.end(), slower.begin(), slower.end());
+        return pulses;
+    };
+
+    // Where each run's fill steps back: once, early in the slower tempo.
+    const std::vector<step_back> to_80_bpm{{.frame = 402'016, .from = 107, .to = 106}};
+    const std::vector<step_back> slowdown{{.frame = 420'032, .from = 112, .to = 106}};
+
+    const std::vector<run> runs{
+        {.name = "steady", .pulses = steady_pulses(0, pulse_frames, until), .expected = {}},
+        {.name = "to 80 BPM", .pulses = slowing(9'000), .expected = to_80_bpm},
+        {.name = "a 3x slowdown", .pulses = slowing(18'000), .expected = slowdown},
+    };
+
+    for (const run& each : runs) {
+        CAPTURE(each.name);
+
+        scene swept{silent_signal(until), each.pulses, 0};
+        swept.play_until(3 * bar_frames);
+
+        std::vector<step_back>      seen;
+        std::optional<std::int64_t> bar;
+        std::size_t                 fill = 0;
+
+        while (swept.history().end().value() < until) {
+            swept.play_until(swept.history().end().value() +
+                             static_cast<std::int64_t>(block_frames));
+
+            const ui_model model = swept.model();
+
+            REQUIRE(model.view == strip_view::bars);
+
+            if (model.bar == bar && model.now_column < fill) {
+                seen.push_back(step_back{
+                    .frame = swept.history().end().value(),
+                    .from  = fill,
+                    .to    = model.now_column,
+                });
+            }
+
+            bar  = model.bar;
+            fill = model.now_column;
+        }
+
+        CHECK(seen == each.expected);
+
+        for (const step_back& moment : seen) {
+            CAPTURE(moment.frame);
+
+            scene played{until, each.pulses};
+            played.play_until(moment.frame);
+
+            const ui_model model = played.model();
+
+            CHECK(model.now_column == moment.to);
+            check_bars_view(model, played);
+        }
+    }
+}
+
 TEST_CASE("just after the clock starts, slots for bars the grid cannot place stay empty")
 {
     // 10 s of sound before the first pulse.
@@ -642,9 +767,9 @@ TEST_CASE("while the clock is stopped, the bars go on with the freewheeling grid
 
 TEST_CASE("at slow tempos the bars reach back past the history, and what is older is empty")
 {
-    // 20 BPM: a pulse every 36,000 frames, a bar of 576,000 (12 s). Five bars are 60 s, and the
-    // history is 31.4 s.
-    const std::int64_t slow_pulse = 36'000;
+    // 30 BPM: a pulse every 24,000 frames, a bar of 384,000 (8 s). Five bars are 40 s, and the
+    // history is 31.4 s at most.
+    const std::int64_t slow_pulse = 24'000;
     const std::int64_t slow_bar   = 16 * slow_pulse;
     const std::int64_t end        = (6 * slow_bar) + (slow_bar / 2);
 
@@ -658,17 +783,14 @@ TEST_CASE("at slow tempos the bars reach back past the history, and what is olde
     check_header(model, played);
     check_bars_view(model, played);
 
-    // Bar 2 ended before the history begins, so its slot holds nothing. The history begins part
-    // of the way through bar 3, so its slot starts empty and then holds sound.
-    REQUIRE(played.history().begin().value() > 3 * slow_bar);
-    REQUIRE(played.history().begin().value() < 4 * slow_bar);
+    // The history begins part of the way through bar 2, so bar 2's slot starts empty and then
+    // holds sound, and the bars after it are whole.
+    REQUIRE(played.history().begin().value() > 2 * slow_bar);
+    REQUIRE(played.history().begin().value() < 3 * slow_bar);
 
-    for (std::size_t column = 0; column < slot_starts[1]; ++column) {
-        CHECK(model.strip[column] == strip_column{});
-    }
-
-    CHECK(model.strip[slot_starts[1]] == strip_column{});
-    CHECK(model.strip[slot_starts[2] - 1].recorded);
+    CHECK(model.strip.front() == strip_column{});
+    CHECK(model.strip[slot_starts[1] - 1].recorded);
+    CHECK(model.strip[slot_starts[1]].recorded);
 }
 
 TEST_CASE("a page the pool could not supply is an empty stretch of the strip")
