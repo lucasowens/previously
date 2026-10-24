@@ -114,27 +114,38 @@ struct stamped {
     std::array<std::uint64_t, 32> words{};
 };
 
-TEST_CASE("from one thread to another, every value taken is whole, newer than the last, and the "
-          "last is the last published")
+TEST_CASE("from one thread to another, each value taken is whole and newer than the last, and "
+          "the reader meets the writer halfway and at the end")
 {
     constexpr std::uint64_t value_count = 200'000;
+    constexpr std::uint64_t halfway     = value_count / 2;
 
     triple_buffer<stamped> buffer;
-    std::atomic<bool>      finished{false};
+    std::atomic<bool>      paused{false};    // the writer has published half, and waits
+    std::atomic<bool>      resumed{false};   // the reader has looked since, so the writer goes on
+    std::atomic<bool>      finished{false};  // the writer has published everything
 
-    std::thread writer{[&buffer, &finished] {
+    // The writer could publish every value before the reader starts. So halfway it waits until
+    // the reader has looked, and the two threads meet mid-stream whatever the scheduler does.
+    std::thread writer{[&buffer, &paused, &resumed, &finished] {
         for (std::uint64_t serial = 1; serial <= value_count; ++serial) {
             stamped value;
 
             value.words.fill(serial);
             buffer.publish(value);
+
+            if (serial == halfway) {
+                paused.store(true, std::memory_order_release);
+
+                while (!resumed.load(std::memory_order_acquire)) {
+                }
+            }
         }
 
         finished.store(true, std::memory_order_release);
     }};
 
     std::uint64_t last  = 0;
-    std::size_t   takes = 0;
     std::size_t   torn  = 0;
     std::size_t   stale = 0;
 
@@ -150,23 +161,32 @@ TEST_CASE("from one thread to another, every value taken is whole, newer than th
             return word == serial;
         });
 
-        ++takes;
         torn += whole ? 0 : 1;
         stale += serial <= last ? 1 : 0;
         last = serial;
     };
 
-    // Taking until the writer has finished, then once more: everything it published is visible
-    // by then, so a buffer that works has the last value to give, and a broken one fails here
-    // rather than leaving the loop waiting for it.
+    // Taking until the writer has finished, then once more. At the pause, nothing newer than the
+    // halfway value is published until the reader has looked, so a buffer that works has given
+    // it by then; at the end, it has the last value to give. The reader answers the pause, and
+    // stops when the writer finishes, whatever it took, so a broken buffer fails the checks
+    // rather than leaving either thread waiting.
+    std::uint64_t at_pause = 0;
+
     while (!finished.load(std::memory_order_acquire)) {
         take_one();
+
+        if (!resumed.load(std::memory_order_relaxed) && paused.load(std::memory_order_acquire)) {
+            take_one();
+            at_pause = last;
+            resumed.store(true, std::memory_order_release);
+        }
     }
 
     take_one();
     writer.join();
 
-    CHECK(takes > 1);
+    CHECK(at_pause == halfway);
     CHECK(torn == 0);
     CHECK(stale == 0);
     CHECK(last == value_count);

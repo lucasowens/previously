@@ -1370,7 +1370,9 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
   seams. In the module browser, where there is no module, it draws an empty model: `NO CLOCK`.
 - **Tests.** The triple buffer: the newest value wins, a value being read is never written, a seeded
   run of 10,000 publishes and takes, and two threads passing 200,000 values, each taken whole and
-  newer than the last, the last one last. Nothing allocates. Its memory orders are argued in its
+  newer than the last. The writer pauses halfway until the reader has looked, so the threads meet
+  mid-stream however they are scheduled, and the reader takes the halfway value there and the last
+  at the end. Nothing allocates. Its memory orders are argued in its
   header rather than tested: neither the two threads nor ThreadSanitizer, which treats an atomic
   exchange as synchronising, see them relaxed. The module's feed (`rack/src/screen.hpp`,
   header-only like the other adapters, so the host tests reach it) publishes after the first block
