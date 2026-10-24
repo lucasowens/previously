@@ -14,8 +14,11 @@
 #include "screen.hpp"
 #include "tape.hpp"
 
+#include <array>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <string_view>
 
 namespace previously::vcv {
 
@@ -163,33 +166,114 @@ private:
     screen_feed                       screen_;  // the module's, so it outlives each engine
 };
 
-/// Jack centres on the panel, in millimetres from the top-left corner.
-struct jack_position {
+/// A point on the panel, in millimetres from the top-left corner.
+struct panel_point {
     float x_mm;
     float y_mm;
 };
 
-constexpr jack_position beat_led{12.0F, 22.0F};
-constexpr jack_position bar_led{25.4F, 22.0F};
-constexpr jack_position clock_state_led{38.8F, 22.0F};
-constexpr jack_position clock_jack{15.0F, 42.0F};
-constexpr jack_position reset_jack{35.8F, 42.0F};
-constexpr jack_position clock_out_jack{35.8F, 60.0F};
-constexpr jack_position in_left_jack{15.0F, 99.0F};
-constexpr jack_position in_right_jack{15.0F, 113.0F};
-constexpr jack_position out_left_jack{35.8F, 99.0F};
-constexpr jack_position out_right_jack{35.8F, 113.0F};
+// Light and jack centres.
+constexpr panel_point beat_led{12.0F, 22.0F};
+constexpr panel_point bar_led{25.4F, 22.0F};
+constexpr panel_point clock_state_led{38.8F, 22.0F};
+constexpr panel_point clock_jack{15.0F, 42.0F};
+constexpr panel_point reset_jack{35.8F, 42.0F};
+constexpr panel_point clock_out_jack{35.8F, 60.0F};
+constexpr panel_point in_left_jack{15.0F, 99.0F};
+constexpr panel_point in_right_jack{15.0F, 113.0F};
+constexpr panel_point out_left_jack{35.8F, 99.0F};
+constexpr panel_point out_right_jack{35.8F, 113.0F};
 
 /// The screen's pixels: a 1.54" SSD1309's active area, centred in the panel's viewing window
 /// between the clock and audio boxes, which is 1 mm wider all round (DESIGN.md §9.3).
-constexpr jack_position screen_centre{25.4F, 77.5F};
-constexpr float         screen_width_mm  = 35.05F;
-constexpr float         screen_height_mm = 17.51F;
+constexpr panel_point screen_centre{25.4F, 77.5F};
+constexpr float       screen_width_mm  = 35.05F;
+constexpr float       screen_height_mm = 17.51F;
 
-[[nodiscard]] rack::math::Vec to_pixels(jack_position position)
+// Labels are centred on their point, which is on their baseline. At 2.8 mm, Nunito Bold's
+// capitals are 2 mm high, and a label stands about 1.5 mm clear of what it names: above a jack,
+// whose radius is 4 mm, or below a light, whose radius is 1.5 mm.
+constexpr float label_size_mm = 2.8F;
+constexpr float name_size_mm  = 4.4F;
+
+[[nodiscard]] constexpr panel_point above_jack(panel_point jack) noexcept
 {
-    return rack::mm2px(rack::math::Vec{position.x_mm, position.y_mm});
+    return {jack.x_mm, jack.y_mm - 5.5F};
 }
+
+[[nodiscard]] constexpr panel_point below_light(panel_point light) noexcept
+{
+    return {light.x_mm, light.y_mm + 4.8F};
+}
+
+struct panel_label {
+    std::string_view text;
+    panel_point      at;
+};
+
+constexpr std::array labels{
+    panel_label{"BEAT", below_light(beat_led)},
+    panel_label{"BAR", below_light(bar_led)},
+    panel_label{"SYNC", below_light(clock_state_led)},  // green locked, amber freewheeling
+    panel_label{"CLOCK", above_jack(clock_jack)},
+    panel_label{"RESET", above_jack(reset_jack)},
+    panel_label{"CLOCK OUT", above_jack(clock_out_jack)},
+    panel_label{"IN L", above_jack(in_left_jack)},
+    panel_label{"IN R", above_jack(in_right_jack)},
+    panel_label{"OUT L", above_jack(out_left_jack)},
+    panel_label{"OUT R", above_jack(out_right_jack)},
+};
+
+/// The module's name, centred in the 12 mm band at the top.
+constexpr panel_label module_name{"PREVIOUSLY", {25.4F, 7.6F}};
+
+[[nodiscard]] rack::math::Vec to_pixels(panel_point point)
+{
+    return rack::mm2px(rack::math::Vec{point.x_mm, point.y_mm});
+}
+
+/// The panel's labels. Rack draws no text in a panel's SVG, so the module draws them, in Rack's
+/// own Nunito Bold, each at the point of what it names: a jack that moves takes its label along.
+/// The widget covers the panel, and is transparent to the mouse, so clicks reach the jacks and
+/// the module beneath it.
+class panel_labels : public rack::widget::TransparentWidget {
+public:
+    explicit panel_labels(rack::math::Vec panel_size) noexcept
+    {
+        box.size = panel_size;
+    }
+
+    void draw(const DrawArgs& args) override
+    {
+        const std::shared_ptr<rack::window::Font> font =
+            APP->window->loadFont(rack::asset::system("res/fonts/Nunito-Bold.ttf"));
+
+        if (!font || font->handle < 0) {
+            return;
+        }
+
+        nvgFontFaceId(args.vg, font->handle);
+        nvgTextAlign(args.vg, NVG_ALIGN_CENTER | NVG_ALIGN_BASELINE);
+
+        write(args.vg, module_name, name_size_mm, nvgRGB(0x1D, 0x21, 0x26));  // dark on the band
+
+        for (const panel_label& label : labels) {
+            write(args.vg, label, label_size_mm, nvgRGB(0xC9, 0xCF, 0xD6));
+        }
+
+        TransparentWidget::draw(args);
+    }
+
+private:
+    static void write(NVGcontext* vg, const panel_label& label, float size_mm, NVGcolor colour)
+    {
+        const rack::math::Vec at = to_pixels(label.at);
+
+        nvgFontSize(vg, rack::mm2px(size_mm));
+        nvgFillColor(vg, colour);
+        nvgText(vg, at.x, at.y, label.text.data(), label.text.data() + label.text.size());
+    }
+};
 
 /// The screen: the module's newest model, drawn into a framebuffer and painted on the light
 /// layer, so it stays lit when the room is dimmed. In the module browser there is no module, and
@@ -264,6 +348,7 @@ public:
         // "instance", not "module": ModuleWidget already has a member named module.
         setModule(instance);
         setPanel(rack::createPanel(rack::asset::plugin(pluginInstance, "res/previously.svg")));
+        addChild(new panel_labels{box.size});  // Rack deletes a widget with its parent
 
         addInput(rack::createInputCentered<jack>(to_pixels(in_left_jack),
                                                  instance,
@@ -305,7 +390,7 @@ public:
             instance,
             previously_module::clock_state_light));
 
-        addChild(new screen_widget{instance});  // Rack deletes a widget with its parent
+        addChild(new screen_widget{instance});
     }
 };
 

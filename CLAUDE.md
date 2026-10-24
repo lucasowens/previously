@@ -105,7 +105,8 @@ however the binary is run.
   - Rack's screen (PR #16, DESIGN §9.3): a 1.54" OLED's 35.05 × 17.51 mm on the panel. The module
     hands each rebuilt model to the UI thread through a `triple_buffer` (engine), kept by the
     module so it outlives engine rebuilds (`rack/src/screen.hpp`); the widget draws it on the
-    light layer. Not yet checked by the user in Rack.
+    light layer. The module draws the panel's labels in Rack's Nunito Bold, since Rack's SVG
+    renderer draws no text. Not yet checked by the user in Rack.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)

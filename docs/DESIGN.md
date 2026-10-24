@@ -1344,6 +1344,8 @@ SSD1309, whose controller takes the SSD1306's page order. Its pixels fill the mo
 sits between the clock and audio boxes. The audio box and its jacks move 3 mm down to make room,
 leaving 1.5 mm each side of the window. A 0.96" screen was hard to read at Rack's 100% zoom, and a
 1.3" one fits with room to spare. The next size up, 2.42" (55.01 × 27.49 mm), is wider than 10 HP.
+Rack draws no text in a panel's SVG, so the module draws the panel's name and labels itself, in
+Rack's own Nunito Bold, each at the position of the jack or light it names.
 
 - **From the audio thread to the screen.** The module keeps a triple buffer of models
   (`triple_buffer.hpp`). It is the module's, not the engine's, so it outlives the engine's rebuilds
