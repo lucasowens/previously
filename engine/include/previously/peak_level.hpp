@@ -49,8 +49,9 @@ inline constexpr std::array<float, peak_level::max_level> level_thresholds{
     1.0F,           //   0 dB
 };
 
-/// The level a peak reaches: how many thresholds are at or below it. `peak` is a magnitude, never
-/// negative, and finite: the recorder measures what the DC blocker passes on, which is neither.
+/// The level a peak reaches: how many thresholds are at or below it. `peak` is a magnitude, so
+/// never negative. It is finite too: the recorder measures the DC blocker's output, and the blocker
+/// turns NaN and infinity into zero (audio_floor.hpp).
 [[nodiscard]] constexpr std::uint8_t level_of(float peak) noexcept
 {
     const auto reached =

@@ -305,7 +305,7 @@ private:
     recorder                  history_;
 };
 
-/// Checks the time view against the newest 1,408 buckets, 11 to a column, newest at the right.
+/// Checks the time view against the newest buckets, 11 to a column, newest at the right.
 void check_time_view(const ui_model& model, const scene& played)
 {
     CHECK(model.view == strip_view::time);
@@ -419,7 +419,7 @@ void check_header(const ui_model& model, const scene& played)
     }
 }
 
-TEST_CASE("without a clock the strip is time: the newest 1,408 buckets, 11 to a column")
+TEST_CASE("without a clock the strip is time: the newest buckets, 11 to a column")
 {
     scene played{40 * second, {}};
 

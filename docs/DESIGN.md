@@ -245,7 +245,7 @@ build links with, so the budget follows the layout.
 | With the clock wiring and hiccup handling (P1) | 74% (97,512 bytes) | About 11 KB of engine and tracker code, unoptimized (below) |
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
-| With the history's peaks and the UI model (§9.3) | 88% (115,644 bytes) | 6,772 bytes more unoptimized; 4,016 at `-O3` with LTO |
+| With the history's peaks and the UI model (§9.3) | 88% (115,676 bytes) | 6,804 bytes more unoptimized; 4,000 at `-O3` with LTO |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -257,7 +257,7 @@ only targets defined after it in the firmware's directory. The engine is added b
 toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
 - **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
   scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it. The
-  history's peaks and the UI model take it to 79,332 bytes (61%): 4,016 more than the commit before
+  history's peaks and the UI model take it to 79,316 bytes (61%): 4,000 more than the commit before
   them, built in the same scratch tree.
 - **Speed.** The engine's speed on the device would not be representative until it is fixed.
 - **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
@@ -1216,7 +1216,10 @@ images, then Rack's panel. The screen has a header line, and a **history strip**
 - **The strip, once the grid has a tempo: bars.** The last 4 whole bars and the bar in progress,
   in five slots starting at columns 0, 25, 51, 76 and 102. The 4 whole bars are what a 4-bar
   capture takes when pressed now (§3.4), so the strip answers "if I press now, what do I get?".
-  - The bar in progress fills its slot from the left. When it ends, the strip moves on a bar.
+  - The bar in progress fills its slot from the left. When it ends, the strip moves on a bar. Its
+    end line is a prediction, so when the tempo is re-estimated its columns move, and the fill can
+    step back: from column 107 to 106 when a change from 120 to 80 BPM is confirmed, and from 112
+    to 106 at a 3× slowdown. With a steady clock it never does.
   - Every bar fills its slot, whatever its length, so a change of tempo squeezes none off the
     screen. A column starts at the first frame at or after its share of the bar.
   - Just after the clock starts, the earliest slots hold bars from before it, which the grid
@@ -1235,9 +1238,11 @@ images, then Rack's panel. The screen has a header line, and a **history strip**
   ```
 
   When bar 22 begins, slot 0 shows bar 18.
-- **Before that: time.** The newest 1,408 buckets, 11 to a column, newest at the right: 30.0 s at
-  48 kHz. Whole columns move on together, one every 11 buckets (235 ms), so the picture moves in
-  steps rather than shimmering as buckets cross column edges.
+- **Before that: time.** The newest buckets, 11 to a column, newest at the right. The newest column
+  fills as its buckets are recorded, so the strip holds from 1,397 buckets and a frame up to 1,408:
+  29.8 to 30.0 s at 48 kHz. Whole columns move on together, one every 11 buckets (235 ms at
+  48 kHz, 255 ms at 44.1 kHz), so the picture moves in steps rather than shimmering as buckets
+  cross column edges.
 - **Both views** show each column's loudest peak in each channel, the left above a centre line and
   the right below, as a level (`peak_level.hpp`). Level k is a peak of at least
   10^((3k − 48) / 20): 1 is −45 dBFS, 16 is 0 dBFS and above, and 0 is quieter than −45 dBFS. The
