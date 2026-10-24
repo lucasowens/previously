@@ -100,15 +100,26 @@ void check_kept(const planted_clock& clock)
     }
 }
 
+/// The gate clock's jitter never strays beyond 6 × 0.005 samples (test_noise::gaussian), so a pulse
+/// on the grid is never further than this from where it belongs.
+constexpr double on_grid_error = 0.03;
+
 /// The table's rows that repair: every pulse around the line is repaired within `bound` samples
-/// of where it belongs, or kept at its raw edge. The table's worst includes the kept edges' gate
-/// jitter, 0.005 samples rms, which another draw of it can put above `bound`.
+/// of where it belongs, or kept at its raw edge because that edge is on the grid. The table's
+/// worst includes the kept edges' gate jitter, 0.005 samples rms, which another draw of it can
+/// put above `bound`. A displaced pulse left at its raw edge fails.
 void check_repaired(const planted_clock& clock, double bound)
 {
     CAPTURE(clock.name);
 
     for (const pulse_outcome& outcome : estimate_around_line(clock)) {
-        CHECK((outcome.basis == line_basis::repaired ? outcome.error <= bound : outcome.kept));
+        if (outcome.basis == line_basis::repaired) {
+            CHECK(outcome.error <= bound);
+        }
+        else {
+            CHECK(outcome.kept);
+            CHECK(outcome.error <= on_grid_error);
+        }
     }
 }
 
@@ -152,11 +163,8 @@ TEST_CASE("one pulse off by 2 or 30 samples, or by up to 0.45 of a period, is re
     check_line_repaired(test::small_hiccup(30.0), 0.01);
 }
 
-TEST_CASE("bursts of 2 to 4 off-grid pulses, at or around the line or inside a side, are repaired "
-          "within 0.05")
+TEST_CASE("bursts of 2 to 4 off-grid pulses at or around the line are repaired within 0.05")
 {
-    // Bursts that reach the line repair it; one inside a side leaves the line's own edge on the
-    // grid, where step 2 keeps it, and the repaired lines are its neighbours.
     for (const auto& burst : std::vector<std::vector<std::pair<int, double>>>{
              {{0, 0.3}, {1, -0.3}},
              {{-1, 0.2}, {0, 0.3}, {1, -0.3}},
@@ -165,7 +173,13 @@ TEST_CASE("bursts of 2 to 4 off-grid pulses, at or around the line or inside a s
          }) {
         check_line_repaired(test::hiccups(burst), 0.05);
     }
+}
 
+TEST_CASE("bursts of 3 or 4 off-grid pulses inside a side are repaired within 0.05, around a line "
+          "kept on the grid")
+{
+    // The line's own edge is on the grid, where step 2 keeps it. The displaced pulses within 3 of
+    // it are repaired; each kept pulse must be one that was on the grid.
     for (const auto& burst : std::vector<std::vector<std::pair<int, double>>>{
              {{1, 0.3}, {2, -0.3}, {3, 0.3}},
              {{-3, 0.3}, {-2, -0.3}, {-1, 0.3}},
