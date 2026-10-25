@@ -124,10 +124,11 @@ however the binary is run.
     and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
     at: 184 MiB at 768 kHz. A rate change starts the history again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. The RAM budget (73% now) keeps the bootloader layout open; if it trips, report what
+  asked. The RAM budget (71% now) keeps the bootloader layout open; if it trips, report what
   grew.
-- **The engine is built at `-O0` in the firmware** (DESIGN §2.3, issue #11): flash is 88% now,
-  61% with the engine optimized. If the flash budget trips, fix that first, then try `-Os` and
+- **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
+  #11): flash is 60% and RAM 71%, and T0 fails the build if an engine source loses `-O3`,
+  `-flto` or `-ffp-contract=off`, or gains NDEBUG. If the flash budget trips, try `-Os` next and
   report the trade-off.
 - **Next:** capture (§3.4: which bars, shortening and refusal, pinning, presses in flight), then
   playback (§5, §3.6), then the Rack controls. PR #6's closing review lists the tests each owes,

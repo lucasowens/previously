@@ -246,22 +246,35 @@ build links with, so the budget follows the layout.
 | With the tracker's edge times (P1) | 75% (98,476 bytes) | |
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
+| With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
 toolchain's paths: CI builds the same commit 340 bytes larger.
 
-**The engine is built without optimization in the firmware** (found in PR #10, issue #11).
-libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options`, which reaches
-only targets defined after it in the firmware's directory. The engine is added before it, and the
-toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiles at GCC's default, `-O0`.
-- **Flash.** Every figure in the table above includes this. With the engine at `-O3` and LTO, a
-  scratch build takes 73,608 bytes (56%) before the tape and 75,240 bytes (57%) with it. The
-  history's peaks and the UI model take it to 79,340 bytes (61%): 4,024 more than the commit before
-  them, built in the same scratch tree.
-- **Speed.** The engine's speed on the device would not be representative until it is fixed.
-- **Stack.** PR #7 found that LTO's stack report leaves out the engine's functions; this is why.
-- **Order of remedies.** Fixing this comes before `-Os` in the steps below.
+**The engine was built without optimization in the firmware until PR #18** (found in PR #10,
+issue #11). libDaisy's `DaisyProject.cmake` adds `-O3` and `-flto` with `add_compile_options`,
+which reaches only targets defined after it in the firmware's directory. The engine is added
+before it, and the toolchain file empties `CMAKE_CXX_FLAGS_RELEASE`, so the engine compiled at
+GCC's default, `-O0`. The rows above PR #18's include this.
+
+- **The fix.** The firmware gives the engine DaisyProject's own options, from the same variables,
+  so the two cannot drift apart: `-O3` and `-flto` in a release build. NDEBUG stays undefined in
+  the engine, so its contracts stay on. The engine is not position-independent in the firmware,
+  which saves 112 bytes; Rack's shared library still needs it.
+- **T0 checks it.** After every release link, the build reads its own `compile_commands.json` and
+  fails unless every engine source is compiled with `-O3` as its last `-O` option, `-flto` and
+  `-ffp-contract=off`, and without NDEBUG (`cmake/check_firmware_engine_flags.cmake`). A host test
+  runs the check against fixtures.
+- **Flash** fell from 115,660 bytes to 79,152. A scratch build had estimated 79,340.
+- **RAM** fell by 2,456 bytes. Unoptimized, GCC 15 turns on libstdc++'s own assertions: bounds
+  checks in `std::span`, `std::array` and `std::optional`, which report through newlib's stdio.
+  stdio allocates its buffers, so they linked `malloc`: its 1,032-byte arena and 512 bytes of
+  `_impure_data` were in `.data`. Optimized, the assertions are off, as in any optimized build,
+  and those go, with the 60-byte GOT.
+- **Speed.** The engine's speed on the device is now representative.
+- **Stack.** The engine's functions are LTO objects now, so LTO's stack report includes them
+  (PR #7 found it left them out). The figures below are from it.
 
 **Hardware work is deferred** (decided after PR #2): development stays host- and Rack-first. The
 build fails if the flash budget is exceeded (T0). When it does:
@@ -284,12 +297,16 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 84,860 bytes (73%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+- **Today** they take 82,404 bytes (71%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (30,248 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 472 the
   UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 9 times the measured need. GCC's `-fstack-usage` report, before
-  LTO, summed along the deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at
-  start-up.
+- **The stack reserve** is about 8 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 2.1 KB once audio runs and about 1.1 KB
+  at start-up. The 2.1 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
+  the DMA handler, libDaisy's callback with its two arrays of a block's samples (912 bytes at 48
+  frames), and the engine's `process()` (inlined into the firmware's callback) and
+  `report_clock()`, whose array of 33 grid points is 528 bytes. Optimized, the engine's frames
+  are larger, holding what it inlines; unoptimized, the same chains summed to about 1.8 KB.
 
 Budget items so far:
 
