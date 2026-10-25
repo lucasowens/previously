@@ -62,13 +62,9 @@ public:
         return size_;
     }
 
-    [[nodiscard]] std::span<const float> values() const noexcept
-    {
-        return std::span{values_}.first(size_);
-    }
-
-    /// The median; of an even count, the mean of the middle two. Zero for an empty list.
-    [[nodiscard]] float median() const noexcept
+    /// The median; of an even count, the mean of the middle two. Zero for an empty list. It sorts
+    /// the list in place, so that no copy takes the audio thread's stack.
+    [[nodiscard]] float median() noexcept
     {
         if (size_ == 0) {
             return 0.0F;
@@ -76,23 +72,31 @@ public:
 
         // An insertion sort: the lists are short, at most 66 values. std::sort's own insertion
         // step draws a false -Warray-bounds from GCC 14 and 15 at -O3 on the 8-value lists.
-        std::array<float, Capacity> sorted = values_;
-
         for (std::size_t next = 1; next < size_; ++next) {
-            const float value = sorted[next];
+            const float value = values_[next];
             std::size_t place = next;
 
-            while (place > 0 && sorted[place - 1] > value) {
-                sorted[place] = sorted[place - 1];
+            while (place > 0 && values_[place - 1] > value) {
+                values_[place] = values_[place - 1];
                 --place;
             }
 
-            sorted[place] = value;
+            values_[place] = value;
         }
 
         const std::size_t middle = size_ / 2;
 
-        return size_ % 2 == 1 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2.0F;
+        return size_ % 2 == 1 ? values_[middle] : (values_[middle - 1] + values_[middle]) / 2.0F;
+    }
+
+    /// Replaces each value by its distance from `centre`.
+    void to_distances_from(float centre) noexcept
+    {
+        const std::span<float> live = std::span{values_}.first(size_);
+
+        std::ranges::transform(live, live.begin(), [centre](float value) {
+            return std::abs(value - centre);
+        });
     }
 
 private:
@@ -103,26 +107,25 @@ private:
 /// The edges around a line, as residuals from the straight line through the line's edge at the
 /// period: exact in ticks, and as floats in samples for the side fits. Offsets run from the first
 /// pulse read before the line, at most 64 back, to 8 after it.
+///
+/// The edges are read through `edge_at(offset)`, from the tracker's history or from a span, so
+/// that no copy of them takes the audio thread's stack.
 class residual_window {
 public:
-    residual_window(std::span<const pulse_edge> edges,
-                    std::size_t                 line,
-                    sample_time                 period) noexcept
-        : before_{static_cast<int>(std::min(line, line_pulses_before))}
+    template <typename EdgeAt>
+    residual_window(const EdgeAt& edge_at, int before, sample_time period) noexcept
+        : before_{before}
     {
-        const sample_time origin = edges[line].time;
-        const std::size_t first  = line - static_cast<std::size_t>(before_);
+        expects(before >= 0 && before <= before_most);
 
-        const std::size_t last = static_cast<std::size_t>(before_) + line_pulses_after;
+        const sample_time origin = edge_at(0).time;
 
-        for (std::size_t read = 0; read <= last; ++read) {
-            const int         offset = static_cast<int>(read) - before_;
-            const pulse_edge& edge   = edges[first + read];
+        for (int offset = -before_; offset <= after; ++offset) {
+            const pulse_edge  edge = edge_at(offset);
             const sample_time on_line =
                 origin + sample_time::from_ticks(period.ticks() * std::int64_t{offset});
 
             exact_[slot(offset)]     = (edge.time - on_line).ticks();
-            residuals_[slot(offset)] = (edge.time - on_line).to_samples_float();
             filled_in_[slot(offset)] = edge.filled_in;
         }
     }
@@ -132,9 +135,10 @@ public:
         return offset >= -before_ && offset <= after;
     }
 
+    /// The residual at `offset`, in samples.
     [[nodiscard]] float at(int offset) const noexcept
     {
-        return residuals_[slot(offset)];
+        return sample_time::from_ticks(exact_[slot(offset)]).to_samples_float();
     }
 
     /// The residual at `offset`, exactly, in ticks.
@@ -159,7 +163,6 @@ private:
 
     int                                                                  before_;
     std::array<std::int64_t, line_pulses_before + line_pulses_after + 1> exact_{};
-    std::array<float, line_pulses_before + line_pulses_after + 1>        residuals_{};
     std::array<bool, line_pulses_before + line_pulses_after + 1>         filled_in_{};
 };
 
@@ -249,17 +252,15 @@ struct jitter_estimate {
         differences.push(sample_time::from_ticks(third).to_samples_float());
     }
 
-    const float middle = differences.median();
+    // The median absolute deviation, taken in place.
+    const std::size_t values = differences.size();
+    const float       middle = differences.median();
 
-    float_list<jitter_capacity> deviations;
-
-    for (const float difference : differences.values()) {
-        deviations.push(std::abs(difference - middle));
-    }
+    differences.to_distances_from(middle);
 
     return {
-        .sigma  = deviation_per_mad * deviations.median() / sqrt_20,
-        .values = differences.size(),
+        .sigma  = deviation_per_mad * differences.median() / sqrt_20,
+        .values = values,
     };
 }
 
@@ -284,25 +285,13 @@ struct jitter_estimate {
     return differences.median() / 2.0F;
 }
 
-}  // namespace
-
-line_estimate
-estimate_line(std::span<const pulse_edge> edges, std::size_t line, sample_time period) noexcept
+/// The rule's steps on the window around a line whose edge is `edge`, at least 8 pulses deep.
+[[nodiscard]] line_estimate
+estimate_from(const residual_window& window, sample_time edge, sample_time period) noexcept
 {
-    expects(line + line_pulses_after < edges.size());
-    expects(period.ticks() > 0);
-
-    const sample_time edge = edges[line].time;
-
     line_estimate estimate{.time = edge};
 
-    if (line < side_pulses) {
-        estimate.basis = line_basis::short_history;
-        return estimate;
-    }
-
     // Step 1: fit each side, and estimate the jitter.
-    const residual_window window{edges, line, period};
     const jitter_estimate jitter = estimate_jitter(window);
     const side_fit        left   = fit_side(window, -1);
     const side_fit        right  = fit_side(window, 1);
@@ -368,6 +357,30 @@ estimate_line(std::span<const pulse_edge> edges, std::size_t line, sample_time p
     return estimate;
 }
 
+}  // namespace
+
+line_estimate
+estimate_line(std::span<const pulse_edge> edges, std::size_t line, sample_time period) noexcept
+{
+    expects(line + line_pulses_after < edges.size());
+    expects(period.ticks() > 0);
+
+    if (line < side_pulses) {
+        return {.time = edges[line].time, .basis = line_basis::short_history};
+    }
+
+    const auto edge_at = [&](int offset) {
+        return edges[static_cast<std::size_t>(static_cast<std::ptrdiff_t>(line) + offset)];
+    };
+    const residual_window window{
+        edge_at,
+        static_cast<int>(std::min(line, line_pulses_before)),
+        period,
+    };
+
+    return estimate_from(window, edges[line].time, period);
+}
+
 std::optional<line_estimate> estimate_line(const clock_tracker& grid, std::int64_t pulse) noexcept
 {
     const std::optional<sample_time> period = grid.pulse_period();
@@ -376,38 +389,33 @@ std::optional<line_estimate> estimate_line(const clock_tracker& grid, std::int64
         return std::nullopt;
     }
 
-    constexpr std::size_t before = line_pulses_before;
-    constexpr std::size_t after  = line_pulses_after;
-
-    std::array<pulse_edge, before + after + 1> edges{};
-
     // The line and the 8 pulses after it: until all are recorded, the line is not final.
-    for (std::size_t offset = 0; offset <= after; ++offset) {
-        const std::optional<pulse_edge> edge = grid.edge(pulse + static_cast<std::int64_t>(offset));
-
-        if (!edge) {
+    for (std::int64_t offset = 0; offset <= std::int64_t{line_pulses_after}; ++offset) {
+        if (!grid.edge(pulse + offset)) {
             return std::nullopt;
         }
-
-        edges[before + offset] = *edge;
     }
 
-    // Before it, as far back as the history reaches.
+    // Before it, as far back as the history reaches. The window reads the edges in place.
     std::size_t recorded = 0;
 
-    while (recorded < before) {
-        const std::optional<pulse_edge> edge =
-            grid.edge(pulse - static_cast<std::int64_t>(recorded) - 1);
-
-        if (!edge) {
-            break;
-        }
-
-        edges[before - recorded - 1] = *edge;
+    while (recorded < line_pulses_before &&
+           grid.edge(pulse - static_cast<std::int64_t>(recorded) - 1)) {
         ++recorded;
     }
 
-    return estimate_line(std::span{edges}.subspan(before - recorded), recorded, *period);
+    const auto edge_at = [&](int offset) {
+        return grid.edge(pulse + offset).value_or(pulse_edge{});
+    };
+    const sample_time edge = edge_at(0).time;
+
+    if (recorded < side_pulses) {
+        return line_estimate{.time = edge, .basis = line_basis::short_history};
+    }
+
+    return estimate_from(residual_window{edge_at, static_cast<int>(recorded), *period},
+                         edge,
+                         *period);
 }
 
 }  // namespace previously
