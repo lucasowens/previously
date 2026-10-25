@@ -123,7 +123,9 @@ however the binary is run.
   - Capture under change (PR #22, DESIGN §3.4 "Capture under change, as built"): the engine visits
     a block's moments in time order, each event's and each fill-in's commit
     (`clock_tracker::next_fill_in()`), and checks capture at each, after the edges at that moment
-    and before its presses, so a capture comes out the same at any block size. A waiting capture
+    and before its presses, so a capture comes out the same at any block size. A fill-in due at a
+    block's end belongs to the next block (the tracker goes to a tick before the end), so a reset
+    at its moment goes first there too. A waiting capture
     is planned again when the labels change (a reset, or `retirements()`); a loop in the slot
     keeps its pulses and numbering, and a line whose pulse was retired keeps its edge. A seeded
     property runs scenarios at blocks of 1 to 3,072 frames (`make seeds`).
@@ -139,7 +141,7 @@ however the binary is run.
     at: 184 MiB at 768 kHz. A rate change starts the history again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
-  grew. The stack reserve is about 4.6 times the deepest chain, capture's press checking and
+  grew. The stack reserve is about 4.5 times the deepest chain, capture's press checking and
   planning again through the bar-line estimate (DESIGN §2.3).
 - **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
   #11): flash is 72% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,

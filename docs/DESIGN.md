@@ -247,7 +247,7 @@ build links with, so the budget follows the layout.
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
 | With the estimate reading edges in place (PR #21) | 72% (94,404 bytes) | 488 bytes more, for 1,928 bytes less stack: it reads the tracker's edges twice rather than copying them once |
-| With capture under change (PR #22) | 72% (95,432 bytes) | 1,028 bytes more: a check at each moment, and planning again |
+| With capture under change (PR #22) | 72% (95,060 bytes) | 656 bytes more: a check at each moment, and planning again |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -299,17 +299,20 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 83,572 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+- **Today** they take 83,556 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (31,320 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 1,000
   capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 4.6 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 3.6 KB once audio runs (3,592 bytes) and
-  about 1.1 KB at start-up. The 3.6 KB is `main()`'s frame and the audio interrupt: the FPU's
+- **The stack reserve** is about 4.5 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 3.7 KB once audio runs (3,656 bytes) and
+  about 1.1 KB at start-up. The 3.7 KB is `main()`'s frame and the audio interrupt: the FPU's
   exception frame, the DMA handler, libDaisy's callback with its two arrays of a block's samples
-  (912 bytes at 48 frames), the engine's `process()` (inlined into the firmware's callback), and
-  capture's `press()` (56 bytes), which checks first (160) and can plan a waiting capture again
-  (840) through the bar-line estimate (1,208). A check at a fill-in's commit reaches the same
-  depth.
+  (912 bytes at 48 frames), the engine's `process()` and its moments (inlined into the firmware's
+  callback, 216 bytes with the block's capture commands), and capture's `press()` (56 bytes),
+  which checks first (160) and can plan a waiting capture again (840) through the bar-line
+  estimate (1,208). A check at a fill-in's commit reaches the same depth.
+  - The moments are their own function, `visit_moments()`, so that the clock report's 33 grid
+    points and the UI model's rebuild stay out of this chain. With them inlined into `process()`
+    beside the moments, GCC made one 832-byte frame of it, and the chain 4,320 bytes.
   - Until PR #22 the press planned in its own frame (848 bytes), and the chain was 3,408 bytes.
   - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
     sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
@@ -1002,22 +1005,37 @@ to a capture in flight.
     commit comes 2.5 periods and a tick after the last pulse, usually two fill-ins together. The
     tracker says when its next commit is due (`next_fill_in()`);
   - **a press,** which first checks, so it sees everything the grid knows.
-- **The order within a block** (§10.1). The engine visits the moments of the block's events and
-  its fill-ins' commits in time order. At each moment:
+- **The order within a block** (§10.1). The engine visits the block's start, the moments of its
+  events, and its fill-ins' commits, in time order (`engine::visit_moments()`). At each moment:
   1. every clock edge at that moment, pulses and resets in the order given;
   2. any fill-in due then commits;
   3. the capture checks (`capture::check()`);
   4. the presses at that moment, wherever they were among its edges.
 
-  So an edge at the same moment as a commit goes first, and a pulse and a reset at one moment are
-  seen together, in either order, as the tracker already treats them. A fill-in due exactly at a
-  block's end commits there, as the tracker's timing contract has it. The capture sees it at the
-  next block's start, after that block's edges at its first frame. A block is at most 32
-  double-trigger spacings long (16 at 48 kHz), and fill-ins commit at least a spacing apart, so a
-  block holds at most 33 commits, which bounds the steps.
+  So an edge at the same moment as a commit goes first, and the capture sees a moment's edges
+  together.
+  - **At a block's boundary, too.** A fill-in due exactly at a block's end belongs to the next
+    block: the engine advances the tracker only to a tick before the end, and the fill-in commits
+    at the next block's start, after any edge at its first frame, as it would mid-block. This
+    matters for a reset. A reset claims a pulse up to 2 ms before it (§3.3), and on a clock at the
+    tracker's fastest, 4 ms pulses, a fill-in commits exactly 2 ms after its slot. So a reset at
+    that moment claims the fill-in committing then if it goes first, and the next one if the
+    commit goes first. Until review found it (Copilot, on PR #22), the commit went first at a
+    block's end and the reset first mid-block, so bar 0 depended on the block size.
+  - **A pulse and a reset at one moment** give the same labels in either order, as the tracker
+    treats them, except on that fastest clock at a commit's moment: a reset delivered first claims
+    the committing fill-in, and one delivered after the pulse claims the pulse. The engine keeps
+    the order given, so either way the result is the same at any block size.
+  - **Commands** apply at a block's start, as edges and presses at that moment: a reset command
+    as an edge, before the fill-in due then, and a capture command as a press, after the moment's
+    edges, the fill-in and the check. Where a command takes effect still depends on the block
+    size.
+  - **A block of no frames** holds no moment: nothing happens, and commands wait for the next
+    block.
+  - **A bound.** A block is at most 32 double-trigger spacings long (16 at 48 kHz), and fill-ins
+    commit at least a spacing apart, so a block holds at most 33 commits, which bounds the steps.
 
-  Commands still apply at a block's start, before its edges. After the recording, `follow()` only
-  holds the pages the recorder has taken.
+  After the recording, `follow()` only holds the pages the recorder has taken.
 - **A check**, in order:
   1. a line in the slot whose pulse was retired keeps its edge (below);
   2. a waiting capture whose labels have changed is planned again (below);
@@ -1098,27 +1116,37 @@ to a capture in flight.
     comes after it, and in a pool without room for both it is refused;
   - each moment: a press a tick either side of a fill-in's commit, and at it, mid-block and at a
     block's end; a capture whose line commits at a block's end starting in the next block, before
-    a command press there; a pulse and a reset at one moment, in both orders;
+    a command press there; a capture waiting for the second fill-in to commit after its press, on
+    200-sample pulses; a pulse and a reset at one moment, in both orders;
+  - a reset at a fill-in's commit on 4 ms pulses, claiming that fill-in, where the commit is a
+    block's end (blocks of 480 and 600, and with an empty block there), mid-block (3,072), and as
+    a reset command for the block there; and a capture command for the block that starts as a
+    fill-in commits, coming after it;
   - both examples above, the first with its reset 1 ms and a tick either side of the pulse, the
     second a tick either side of the press; the late press's race;
   - 4.5× and 4.51× at blocks of 32, 480 and 3,072 frames, final at their moments and not a block
     sooner; the waiting tie and a tick after it; a capture planned again by a retirement and
     shortened by the history;
-  - planning again with a window that starts a page before the pages it holds, and with a history
-    that has moved on since the press, on pages of 8,192 frames;
+  - planning again with a window that starts a page before the pages it holds; with a history that
+    has moved on since the press, on pages of 8,192 frames; and keeping the frames of its own pages
+    the history has dropped, on pages of 16,384;
   - the tracker's next fill-in a tick either side, after a steady clock, a late or early hiccup, a
     return and on the MIDI preset; its retirements counted;
-  - a seeded property: random clocks that stop, slow, drift and jitter, with resets around their
-    pulses and presses aimed at lines and commits. Each scenario runs 13.4 s at blocks of 3,072,
-    480, 32, 7 and 1 frames, and the loop report and both loops, lines and pages by number, must
-    be the same at every 107,520 samples. One scenario runs with the host tests, at three sizes,
-    and `make seeds` runs 200 at all five, in 17 s. Per size they make 4,608 presses, plan 170
-    captures again (46 then start at once, 4 are refused, and 18 change their outcome), and keep
-    47 retired lines. The first PR's engine fails 12 of the 200;
+  - a seeded property: random clocks that stop, slow, drift and jitter, a quarter of them as fast
+    as the tracker takes or nearly, with resets around their pulses and at fill-ins' commits, and
+    presses aimed at lines and commits. Each scenario runs 13.4 s at blocks of 3,072, 480, 32, 7
+    and 1 frames, and the loop report and both loops, lines and pages by number, must be the same
+    at every 107,520 samples. One scenario runs with the host tests, at three sizes, and `make
+    seeds` runs 200 at all five, in 17 s. Per size they make 4,638 presses, plan 226 captures
+    again (92 then start at once, 16 are refused, and 38 change their outcome), and keep 62
+    retired lines. The first PR's engine fails 25 of the 200, and this PR's before its boundary
+    fix fails 6;
   - no allocation.
 
-  **Mutation-checked:** 36 mutants, one per mechanism, each confirmed to build against a passing
-  baseline, all caught. The first round's survivors either had no test (more than one commit
+  **Mutation-checked:** 41 mutants, one per mechanism, each confirmed to build against a passing
+  baseline, all caught. The last five are the boundary fix's: a fill-in committing at its block's
+  end, no commit at a block's start before its check, command presses before that commit, command
+  resets after it, and an empty block taken as a moment. The first round's survivors either had no test (more than one commit
   between two events, planning again from the capture's own pages, the reserve from the press
   under labels a reset set before it) and now do, or were redundant and are gone: whether a reset
   set the labels, which changes only with bar 0's pulse, and a count of the retirements the slot
@@ -1833,9 +1861,11 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
       - Every decision uses only what is known at its moment.
       - An edge at the same moment as such a check goes first, and a press goes after both.
 
-      Decisions are therefore identical at any block size, given the same edges and the same
-      times at which commands are applied. Commands apply at block starts, so where a command
-      takes effect does depend on the block size. Audio is still processed a block at a time,
+      A fill-in due at a block's end belongs to the next block, so it too commits after the edges
+      at its moment. Decisions are therefore identical at any block size, given the same edges and
+      the same times at which commands are applied. Commands apply at block starts, a reset as an
+      edge and a capture as a press at that moment, so where a command takes effect does depend
+      on the block size. Audio is still processed a block at a time,
       since nothing in it depends on a decision yet. Playback will render a block in segments,
       split where its decisions take effect.
 - **Memory:** the engine receives one memory region at construction, a
