@@ -1198,10 +1198,14 @@ them and never past valid data.
   a move inside the last bar (§5.2), and the wrap seam itself is unchanged.
 - **The read margin is never played at native speed,** because it begins with the next bar's
   downbeat.
-- **Too little pre-roll** does not arise from capture: a capture whose pre-roll is not in the
-  history is shortened, or refused, just after power-up too (§3.4). Were it to arise, the seam
-  would shorten to what exists, and below 2 ms, a starting value, the loop would fade out and in
-  instead.
+- **Every loop has its full pre-roll.** A capture whose pre-roll is not in the history is
+  shortened, or refused, just after power-up too (§3.4). So the seam never shortens for want of
+  audio before the start, and the seam, the correlation windows and the bar-locked moves all read
+  50 ms that exist.
+  - Decided over shortening the seam (PR #20): the cost is only a window that starts within 50 ms
+    of power-up, and one guarantee for every loop is simpler to build on than a special case.
+  - Pinned by a test: a window whose pre-roll starts at the history's first frame fits, and one
+    a sample earlier does not.
 - **A silent pre-roll** (a loop captured from the moment the music started): the seam is an 8 ms
   fade to silence before each first downbeat. It is pinned as a stated exception (§5.6).
 - **The margins also bound the correlation windows (§5.4).**
