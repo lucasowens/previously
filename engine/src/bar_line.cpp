@@ -264,25 +264,35 @@ struct jitter_estimate {
     };
 }
 
-/// c_within: half the median of the 12 second differences x[j+1] − 2·x[j] + x[j−1] inside the two
-/// sides, 6 each. Fill-ins count: they follow the last period, so they read as no curvature, and
-/// measured over ramps with fill-ins either side of the line, counting them gives the better
-/// estimates (DESIGN.md §3.4).
-[[nodiscard]] float curvature_within(const residual_window& window) noexcept
+struct curvature_estimate {
+    std::optional<float> curvature;  // empty with no second differences left
+    std::size_t          values{0};
+};
+
+/// c_within: half the median of the second differences x[j+1] − 2·x[j] + x[j−1] inside the two
+/// sides, 6 each, leaving out those that touch a fill-in.
+[[nodiscard]] curvature_estimate curvature_within(const residual_window& window) noexcept
 {
     float_list<within_capacity> differences;
 
     for (const int toward : {-1, 1}) {
         for (int a = 2; a <= static_cast<int>(side_pulses) - 1; ++a) {
-            const int          j = toward * a;
-            const std::int64_t second =
-                window.ticks_at(j + 1) - (2 * window.ticks_at(j)) + window.ticks_at(j - 1);
+            const int j = toward * a;
 
-            differences.push(sample_time::from_ticks(second).to_samples_float());
+            if (!touches_fill_in(window, j - 1, j + 1)) {
+                const std::int64_t second =
+                    window.ticks_at(j + 1) - (2 * window.ticks_at(j)) + window.ticks_at(j - 1);
+
+                differences.push(sample_time::from_ticks(second).to_samples_float());
+            }
         }
     }
 
-    return differences.median() / 2.0F;
+    if (differences.size() == 0) {
+        return {.curvature = std::nullopt, .values = 0};
+    }
+
+    return {.curvature = differences.median() / 2.0F, .values = differences.size()};
 }
 
 /// The rule's steps on the window around a line whose edge is `edge`, at least 8 pulses deep.
@@ -316,16 +326,24 @@ estimate_from(const residual_window& window, sample_time edge, sample_time perio
     // Step 3: correct for curvature, when the slopes between the sides and the second differences
     // within them agree that there is curvature. A tempo step has none within either side, but
     // its slope difference reads as curvature between them.
-    const float between   = (right.slope - left.slope) / slopes_apart_per_curvature;
-    const float within    = curvature_within(window);
-    const float tolerance = std::max({
-        curvature_share * std::abs(within),
-        curvature_floor,
-        curvature_jitters * jitter.sigma,
-    });
-    const bool  curved    = std::abs(between - within) <= tolerance;
+    const float                between   = (right.slope - left.slope) / slopes_apart_per_curvature;
+    const curvature_estimate   estimated = curvature_within(window);
+    const std::optional<float> within    = estimated.curvature;
 
-    estimate.curvature_within = within;
+    estimate.curvature_within = within.value_or(0.0F);
+    estimate.curvature_values = estimated.values;
+
+    bool curved = false;
+
+    if (within) {
+        const float tolerance = std::max({
+            curvature_share * std::abs(*within),
+            curvature_floor,
+            curvature_jitters * jitter.sigma,
+        });
+
+        curved = std::abs(between - *within) <= tolerance;
+    }
 
     const float curvature   = curved ? between : 0.0F;
     const float left_value  = left.value + (miss_per_curvature * curvature);

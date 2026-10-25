@@ -499,25 +499,39 @@ TEST_CASE(
     }
 }
 
-constexpr auto line_index = static_cast<std::size_t>(planted_line);
-
-/// A ramp whose last `count` pulses before the line (`after` false), or before the side after it
-/// ends (`after` true), are fill-ins, flagged, as the tracker fills them in when the clock stops.
-/// As the measurement made them, those before the line go on at the last real interval, and those
-/// after it at the interval into the line. The line's own pulse is then `late` samples off.
-[[nodiscard]] line_estimate
-estimate_with_fill_ins(planted_clock clock, bool after, int count, double late)
+TEST_CASE(
+    "the curvature within the sides leaves out every second difference that touches a fill-in")
 {
-    const auto line  = static_cast<std::size_t>(planted_line);
-    const auto total = static_cast<std::size_t>(count);
-    const auto first = after ? line + 9 - total : line - total;
+    // A hiccup reaches step 3. The 12 second differences are centred 7 to 2 pulses before the
+    // line and 2 to 7 after; fill-ins 3 and 2 before it touch the 3 centred 4, 3 and 2 before.
+    planted_clock clock = test::steady(1);
 
-    const double interval =
-        after ? clock.raw[line] - clock.raw[line - 1] : clock.raw[first - 1] - clock.raw[first - 2];
+    clock.raw[static_cast<std::size_t>(planted_line)] += 1'800.0;
 
     std::vector<bool> filled_in(clock.raw.size(), false);
 
-    for (std::size_t pulse = first; pulse < first + total; ++pulse) {
+    filled_in[static_cast<std::size_t>(planted_line - 3)] = true;
+    filled_in[static_cast<std::size_t>(planted_line - 2)] = true;
+
+    CHECK(test::estimate_planted(clock, planted_line).curvature_values == 12);
+    CHECK(test::estimate_planted(clock, planted_line, filled_in).curvature_values == 9);
+}
+
+constexpr auto line_index = static_cast<std::size_t>(planted_line);
+
+/// A ramp whose last `count` pulses before the line are fill-ins, flagged, going on at the last
+/// real interval, as the tracker fills them in when the clock stops. The line's own pulse is then
+/// `late` samples off.
+[[nodiscard]] line_estimate
+estimate_with_fill_ins_before(planted_clock clock, int count, double late)
+{
+    const auto line     = static_cast<std::size_t>(planted_line);
+    const auto first    = line - static_cast<std::size_t>(count);
+    const auto interval = clock.raw[first - 1] - clock.raw[first - 2];
+
+    std::vector<bool> filled_in(clock.raw.size(), false);
+
+    for (std::size_t pulse = first; pulse < line; ++pulse) {
         clock.raw[pulse] = clock.raw[pulse - 1] + interval;
         filled_in[pulse] = true;
     }
@@ -527,32 +541,25 @@ estimate_with_fill_ins(planted_clock clock, bool after, int count, double late)
     return test::estimate_planted(clock, planted_line, filled_in);
 }
 
-TEST_CASE("the curvature within the sides counts fill-ins, which repairs a stopped ramp's hiccup")
+TEST_CASE("fill-ins before the line, left out of the curvature, keep a ramp's hiccup at its edge")
 {
-    // An exponential ramp to -20% over 8 bars, its clock stopped 3 pulses before the side after
-    // the line ends, and a 300-sample hiccup on the line. Counting the fill-ins' second
-    // differences, the curvature check passes and the repair lands within 10.3 samples; leaving
-    // them out, as the rule did until this was measured, it landed 51.8 samples off.
-    const planted_clock clock    = test::ramp_starting(-0.2, 8, 8, true);
-    const line_estimate estimate = estimate_with_fill_ins(clock, true, 3, 300.0);
+    // The review of PR #21: an exponential ramp to +20% over 2 bars, starting 28 pulses before the
+    // line, 3 fill-ins before it, and a 300-sample hiccup. The fill-ins put the side before the
+    // line off the curve. Counted in c_within, they read as less curvature than the sides' slopes
+    // show, the check failed, and the uncorrected sides agreed on a mean 399.9 samples off: worse
+    // than the raw edge. Left out, the correction applies, the sides disagree, and the edge stays.
+    // Measured over 1,077,120 such ramps, counting fill-ins left 100 lines worse than their raw
+    // edge, and leaving them out none (DESIGN.md §3.4).
+    for (const bool exponential : {true, false}) {
+        CAPTURE(exponential);
 
-    CHECK(estimate.basis == line_basis::repaired);
-    CHECK(std::abs(to_samples(estimate.time) - clock.truth[line_index]) < 10.5);
-}
+        const planted_clock clock    = test::ramp_starting(0.2, 2, 28, exponential);
+        const line_estimate estimate = estimate_with_fill_ins_before(clock, 3, 300.0);
 
-TEST_CASE("counting fill-ins in the curvature can leave a small hiccup on a gentle ramp unrepaired")
-{
-    // The other side of the measurement: an exponential ramp to +5% over 8 bars, one fill-in
-    // before the line, and a 30-sample hiccup. Counted, the fill-in's second difference reads as
-    // no curvature, the check fails, and the edge is kept: 30 samples off, its raw error, never
-    // worse. Leaving it out repaired the line to within 9.2 samples. Over 130,560 such ramps,
-    // counting fill-ins made 158 estimates better and 28 worse (DESIGN.md §3.4).
-    const planted_clock clock    = test::ramp_starting(0.05, 8, 0, true);
-    const line_estimate estimate = estimate_with_fill_ins(clock, false, 1, 30.0);
-
-    CHECK(estimate.basis == line_basis::kept);
-    CHECK(std::abs(to_samples(estimate.time) - clock.truth[line_index]) ==
-          doctest::Approx(30.0).epsilon(1e-3));
+        CHECK(estimate.basis == line_basis::kept);
+        CHECK(to_samples(estimate.time) - clock.truth[line_index] ==
+              doctest::Approx(300.0).epsilon(1e-6));
+    }
 }
 
 TEST_CASE("sigma is exact at any tempo: the same at periods of 6,000 to 192,000 samples")
@@ -632,6 +639,7 @@ TEST_CASE("the curvature within the sides is exact at any tempo")
                           64,
                           sample_time::from_samples(samples{period / 2}));
 
+        CHECK(estimate.curvature_values == 12);
         CHECK(estimate.curvature_within == 0.5F + 0x1p-11F);
     }
 }

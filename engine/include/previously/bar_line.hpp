@@ -49,6 +49,7 @@ struct line_estimate {
     float       jitter{0.0F};            // σ̂, in samples
     std::size_t jitter_values{0};        // the third differences σ̂ came from
     float       curvature_within{0.0F};  // c_within, in samples per pulse², if step 3 ran
+    std::size_t curvature_values{0};     // the second differences it came from
 };
 
 /// The edges the rule reads: up to 64 pulses before the line, and exactly 8 after it.

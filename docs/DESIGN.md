@@ -551,9 +551,9 @@ estimated from the edges *x* of the 8 pulses on each side:
    - **within the sides:** *c_within* = half the median of the 12 second differences
      *x_{j+1}* − 2·*x_j* + *x_{j−1}* inside the two fitted sides (6 each, none using *x_i*). Each
      is 2·*c* plus noise.
-     - Fill-ins count. They follow the last period, so a second difference that touches one
-       reads as no curvature. Leaving them out, as for *σ̂*, was measured and gave the worse
-       estimates (below).
+     - A second difference that touches a fill-in is skipped, as for *σ̂*: fill-ins follow the
+       last period and carry no curvature.
+     - With none left, *c* = 0. That affects accuracy only, because step 4's bound covers it.
 
    A tempo step has no curvature inside either side, but its slope difference reads as
    curvature. So *c* = *c_between* only when |*c_between* − *c_within*| ≤ max(¼·|*c_within*|,
@@ -726,7 +726,7 @@ The other notes:
     it planted edges directly, as PR #6's probe did.
 - **What it returns:** the estimated time; which step decided it (a short history, too few jitter
   values, on a straight line, repaired, or kept); *σ̂* and the number of third differences it came
-  from; and, when step 3 ran, *c_within*.
+  from; and, when step 3 ran, *c_within* and the number of second differences it came from.
 - **Half a period**, in step 4, is half the tracker's pulse period: the one the residuals are taken
   from. The probe used half the spacing of the line's two neighbours. Run through the real
   tracker, with its own period, all 132 scenarios come out as the table says.
@@ -767,15 +767,23 @@ The other notes:
       a cell, by up to 159.5 samples (31, 11 and 159);
     - with 10 usable values and no minimum, no line came out worse (1 in 50,000), so a
       deterministic test pins the minimum instead: 15 values keep the edge, and 16 repair it.
-- **Decided: *c_within* counts fill-ins** (PR #21). Until then it skipped them, carried over from
-  *σ̂*, where it matters (step 1), without a measurement of its own. Measured over 130,560 ramps
-  with 1 to 8 fill-ins before the line or at the end of the side after it: ramps of ±5%, ±20% and
-  ±50% over 2, 4 and 8 bars, linear and exponential, starting 0 to 32 pulses before the line;
-  hiccups of 0, 30, 300 and 1,800 samples on the line; no jitter, or ±2 or ±10 samples over 8
-  seeds. Counting fill-ins changes 186 estimates: 158 for the better and 28 for the worse. The
-  worst of the 186 falls from 55.7 samples off to 31.3, and neither rule is ever worse than the
-  raw edge. The 28 are 30-sample hiccups on gentle ramps that go unrepaired, ending at their raw
-  edge. Tests pin one case each way.
+- **Decided: *c_within* skips fill-ins** (PR #21). The skip came over from *σ̂* without a
+  measurement of its own, so it was measured against counting them. The grid: 1,077,120 ramps with
+  1 to 8 fill-ins before the line or at the end of the side after it; ramps of ±5%, ±20% and ±50%
+  over 2, 4 and 8 bars, linear and exponential, starting at every pulse from 0 to 32 before the
+  line; hiccups of 0, 30, 300 and 1,800 samples on the line; no jitter, or ±2 or ±10 samples over 8
+  seeds each.
+  - Counting fill-ins changes 4,111 estimates: 1,174 for the better and 2,937 for the worse.
+  - It leaves 100 lines worse than their raw edge, by up to 126 samples. Skipping them leaves none.
+  - Why: fill-ins before the line put the left fit off the curve. Counted, *c_within* reads less
+    curvature than *c_between*, the check fails, *c* is 0, the uncorrected sides still agree, and
+    the repair lands on their biased mean. Skipped, the correction applies, the sides disagree,
+    and the edge is kept.
+  - A first run sampled the starts at 0, 8, 16 and 32 only, 130,560 ramps. It found counting
+    better, 158 to 28, and no line worse than its edge: it missed every violation. The review of
+    PR #21 found them on a finer grid.
+  - A test pins the review's case: a ramp to +20% over 2 bars with 3 fill-ins before the line and
+    a 300-sample hiccup keeps its edge, where counting fill-ins put it 399.9 samples off.
 
 #### When the loop starts
 

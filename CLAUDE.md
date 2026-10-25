@@ -111,8 +111,8 @@ however the binary is run.
   - The bar-line estimate (PR #17, DESIGN §3.4 "Where a bar line is", `bar_line.hpp`): where a
     past bar line was, from the tracker's edges, as PR #6 designed it. Host only: capture will
     call it. Its tests carry PR #6's closing review: the 132 scenarios (recovered from its probe),
-    and the jitter rows at their seed counts, which run optimized in `make seeds`. c_within counts
-    fill-ins since PR #21, which measured it (DESIGN, "As built").
+    and the jitter rows at their seed counts, which run optimized in `make seeds`. c_within skips
+    fill-ins, as measured in PR #21: counting them breaks never-worse (DESIGN, "As built").
   - Capture's first PR (PR #19, DESIGN §3.4 "Capture, as built", `capture.hpp`,
     `captured_loop.hpp`): a press, as a capture edge or a command, becomes a window of whole bars
     held through the pool. The end line, shortening against the history at the press and 47
