@@ -16,6 +16,9 @@ project(previously_firmware LANGUAGES C CXX ASM)
 list(APPEND CMAKE_MODULE_PATH "${previously_root}/cmake")
 include(previously_options)
 
+# T0 reads the engine's compile commands back from here (below).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 add_subdirectory("${previously_root}/vendor/libDaisy" libDaisy)
 add_subdirectory("${previously_root}/engine" engine)
 
@@ -37,6 +40,21 @@ include(DaisyProject)
 # DaisyProject.cmake sets C++14; the project standard is C++20.
 set_target_properties(${FIRMWARE_NAME} PROPERTIES CXX_STANDARD 20 CXX_EXTENSIONS OFF)
 
+# The engine is added before DaisyProject, whose optimization options are set for the directory
+# and so reach only targets defined after them (issue #11). It takes the same ones here, from
+# DaisyProject's own variables, so the two cannot drift apart. NDEBUG stays undefined in the
+# engine, so its contracts stay on in the firmware.
+target_compile_options(previously_engine PRIVATE
+    $<$<CONFIG:Debug>:${FIRMWARE_DEBUG_OPT_LEVEL}>
+    $<$<CONFIG:Release>:${FIRMWARE_RELEASE_OPT_LEVEL}>
+    $<$<CONFIG:MinSizeRel>:${FIRMWARE_MINSIZEREL_OPT_LEVEL}>
+    $<$<CONFIG:Release,MinSizeRel,RelWithDebInfo>:-flto>
+)
+
+# The engine is position-independent for Rack's shared library. The firmware is one static image,
+# where that only costs: 112 bytes of flash.
+set_target_properties(previously_engine PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+
 target_link_libraries(${FIRMWARE_NAME} PRIVATE previously::engine)
 
 previously_apply_strict_options(${FIRMWARE_NAME})
@@ -50,10 +68,10 @@ previously_apply_embedded_subset(${FIRMWARE_NAME})
 # image loads into SRAM (STM32H750IB_sram.lds).
 #
 # RAM: the variables may take 112 KiB, DTCM's 128 KiB less 16 KiB for the stack. The reserve is
-# about 9 times the measured need. GCC's -fstack-usage report, before LTO, summed along the
-# deepest call chains, gives about 1.8 KB once audio runs and about 1 KB at start-up. The 1.8 KB is
+# about 8 times the measured need. GCC's -fstack-usage report from LTO, summed along the deepest
+# call chains, gives about 2.1 KB once audio runs and about 1.1 KB at start-up. The 2.1 KB is
 # main()'s frame plus the audio interrupt: the FPU's exception frame, the DMA handler, libDaisy's
-# callback, the engine's process() and report_clock(), and the tracker's history search.
+# callback with its two arrays of a block's samples, and the engine's process() and report_clock().
 set(ram_budget_bytes 114688)  # 112 KiB
 
 add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
@@ -66,3 +84,16 @@ add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
             -P "${previously_root}/cmake/check_firmware_size.cmake"
     VERBATIM
 )
+
+# T0: the engine compiled as the firmware's own sources are, at the release level with LTO, its
+# floating point unchanged and its contracts on (cmake/check_firmware_engine_flags.cmake).
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD
+        COMMAND "${CMAKE_COMMAND}"
+                -DCOMPILE_COMMANDS=${CMAKE_BINARY_DIR}/compile_commands.json
+                -DENGINE_SOURCES=${previously_root}/engine/src
+                -DOPT_LEVEL=${FIRMWARE_RELEASE_OPT_LEVEL}
+                -P "${previously_root}/cmake/check_firmware_engine_flags.cmake"
+        VERBATIM
+    )
+endif()

@@ -114,6 +114,14 @@ add_test(NAME firmware_size_budgets
             -P ${CMAKE_CURRENT_SOURCE_DIR}/firmware_size_budgets.cmake
 )
 
+# T0's check that the firmware compiles the engine for release (issue #11).
+add_test(NAME firmware_engine_flags
+    COMMAND ${CMAKE_COMMAND}
+            -DCHECK_SCRIPT=${PROJECT_SOURCE_DIR}/cmake/check_firmware_engine_flags.cmake
+            -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/firmware_engine_flags
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/firmware_engine_flags.cmake
+)
+
 # The budgets' memory regions, read from the linker script.
 add_test(NAME linker_memory_region
     COMMAND ${CMAKE_COMMAND}
