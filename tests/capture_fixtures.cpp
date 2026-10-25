@@ -232,10 +232,15 @@ void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length
 {
     test_noise noise{seed};
 
-    // Whole samples or not; every period from 80 to 180 BPM at 4 PPQN.
-    const bool   whole  = noise.uniform() < 0.5;
-    const double jitter = noise.uniform() < 0.5 ? 0.0 : 3.0;
-    double       period = 4'000.0 + (5'000.0 * noise.uniform());
+    // Whole samples or not; any period from 80 to 180 BPM at 4 PPQN. A quarter of the clocks are
+    // as fast as the tracker takes, or nearly, in whole samples: at 192 samples half a pulse is the
+    // 2 ms in which a reset claims a pulse, so a reset at a fill-in's commit claims that fill-in.
+    const std::array<double, 4> fast{192.0, 192.0, 193.0, 256.0};
+    const bool                  quick  = noise.uniform() < 0.25;
+    const bool                  whole  = quick || noise.uniform() < 0.5;
+    const double                jitter = quick || noise.uniform() < 0.5 ? 0.0 : 3.0;
+    double period = quick ? fast[static_cast<std::size_t>(noise.uniform() * 4.0)]
+                          : 4'000.0 + (5'000.0 * noise.uniform());
 
     if (whole) {
         period = std::round(period);
@@ -256,8 +261,10 @@ void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length
     while (time < end) {
         const double edge = time + noise.uniform(jitter);
 
-        // A reset around a pulse, within the 2 ms that make them one moment, or exactly at it.
-        const double reset = noise.uniform();
+        // A reset around a pulse, within the 2 ms that make them one moment, or exactly at it:
+        // around one pulse in a hundred, and on a fast clock one in a thousand, so that a reset at
+        // a commit (below) is still what numbers the bars when a press comes.
+        const double reset = noise.uniform() * (quick ? 10.0 : 1.0);
         const double near  = noise.uniform() < 0.3 ? 0.0 : noise.uniform(96.0);
 
         if (reset < 0.01) {
@@ -270,9 +277,12 @@ void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length
             edges.push_back({.type = clock_event_type::reset, .when = at_time(edge + near)});
         }
 
-        // Mostly steady. Now and then the clock stops and restarts at a new phase, slows by 2.5x
-        // or more so that its fill-ins are retired, speeds back up, or drifts.
-        const double change = noise.uniform();
+        // Mostly steady. Now and then the clock stops and restarts at a new phase. Unless it is
+        // fast it may also slow by 2.5x or more, so that its fill-ins are retired, speed back up,
+        // or drift: a fast clock keeps its period, so that its fill-ins commit half a pulse after
+        // their slots to the tick, where resets tie with them.
+        const double drawn  = noise.uniform();
+        const double change = quick && drawn >= 0.015 ? 1.0 : drawn;
 
         if (change < 0.015) {
             time += period * (2.6 + (4.0 * noise.uniform()));
@@ -365,7 +375,7 @@ void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length
     // line, waiting for it, and a second as the line arrives, a tick either side of it, or in the
     // same 3,072 frames. Some lines get a reset too, just before their pulse or just after, while
     // the first press waits or once it has started. The rest are a tick either side of a fill-in's
-    // commit, or anywhere.
+    // commit, or anywhere; and a few resets are at a commit.
     constexpr std::array<capture_bars, 4> counts{
         capture_bars::one,
         capture_bars::two,
@@ -421,6 +431,15 @@ void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length
             noise.uniform() * static_cast<double>(commits.size()))];
 
         rig.press(commit + (noise.uniform() < 0.5 ? -one_tick : one_tick), bars_drawn());
+    }
+
+    // Resets at a fill-in's commit as well: a tick either side of it, or exactly on it.
+    for (int reset = 0; reset < 6 && !commits.empty(); ++reset) {
+        const sample_time                commit = commits[static_cast<std::size_t>(
+            noise.uniform() * static_cast<double>(commits.size()))];
+        const std::array<sample_time, 3> around{commit - one_tick, commit, commit + one_tick};
+
+        rig.reset(around[static_cast<std::size_t>(noise.uniform() * 3.0)]);
     }
 
     for (int press = 0; press < 4; ++press) {

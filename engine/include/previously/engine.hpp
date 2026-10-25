@@ -79,8 +79,10 @@ public:
     /// capture presses to capture, then processes the audio. Events must be in time order with
     /// offsets inside the block. Capture is checked at every moment its state can change: after
     /// the clock edges at each event's moment, and as each fill-in commits. A press goes after the
-    /// edges at its moment, wherever it is among them, so that it sees them (DESIGN.md §10.1).
-    /// Realtime-safe: no allocation, no locks, bounded time.
+    /// edges at its moment, wherever it is among them, so that it sees them; and a fill-in due at
+    /// the block's end commits in the next block, after the edges at its first frame (DESIGN.md
+    /// §10.1). A block of no frames changes nothing. Realtime-safe: no allocation, no locks,
+    /// bounded time.
     void process(const audio_block& block, std::span<const clock_event> events = {}) noexcept;
 
     /// Any single non-audio thread. Queues a command for the start of the next block.
@@ -121,8 +123,19 @@ public:
     [[nodiscard]] const engine_config& config() const noexcept;
 
 private:
-    void apply_pending_commands(sample_time block_start) noexcept;
-    void apply(const command& request, sample_time block_start) noexcept;
+    /// Applies the queued commands at the block's start: each reset as an edge at that moment.
+    /// A press waits for the moment's edges, fill-in and check: its bars go to `presses`, and the
+    /// count is returned.
+    [[nodiscard]] std::size_t
+    apply_pending_commands(sample_time                                     block_start,
+                           std::span<capture_bars, command_queue_capacity> presses) noexcept;
+
+    /// The block's moments in time order (DESIGN.md §10.1): its start, with the commands; each
+    /// event's; and each fill-in's commit between them. Its own function, so that the frames of
+    /// report_clock() and update_ui_model() stay out of the deepest call chain.
+    void visit_moments(sample_time                  block_start,
+                       sample_time                  block_end,
+                       std::span<const clock_event> events) noexcept;
 
     /// Commits each fill-in due before `until`, and checks the capture at each one.
     void follow_grid(sample_time until) noexcept;

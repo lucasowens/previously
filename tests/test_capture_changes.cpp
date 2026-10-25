@@ -8,6 +8,7 @@
 // As in test_capture.cpp: 120 BPM in 4/4 at 48 kHz, so a pulse is 6,000 samples and a bar 96,000.
 // Each test runs at block sizes that put its decisive moment mid-block, and at a block's end.
 
+#include "previously/audio_block.hpp"
 #include "previously/capture.hpp"
 #include "previously/engine.hpp"
 
@@ -19,6 +20,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 namespace previously {
@@ -184,6 +186,108 @@ TEST_CASE("a capture whose line commits at a block's end starts in the next bloc
               (commanded ? capture_result::pool_full : capture_result::committed));
         check_holders(audio);
     }
+}
+
+TEST_CASE("a reset at the moment a fill-in commits labels that fill-in, at any block size")
+{
+    // Copilot's case on PR #22. A clock of 192-sample pulses, the fastest the tracker takes, stops
+    // after pulse 104. Bar 7's line, pulse 112, is a fill-in at 21,504, committing half a pulse
+    // later at 21,600: exactly the 2 ms in which a reset claims a pulse before it. A 1-bar press
+    // at 21,354 waits for that line, and a reset arrives at 21,600. The reset goes first, as an
+    // edge at a commit's moment does, so it claims the fill-in committing then: bar 7's line is
+    // bar 0, and the capture is bar -1, numbered by the reset. That holds where 21,600 is a
+    // block's end (480 and 600 frames), with an empty block there, and mid-block (3,072).
+    constexpr std::int64_t pulse   = 192;
+    constexpr std::int64_t line_7  = 112 * pulse;
+    constexpr std::int64_t commits = line_7 + (pulse / 2);
+
+    struct blocking {
+        const char* name{""};
+        std::size_t frames{0};
+        bool        empty_block{false};
+        bool        reset_command{false};
+    };
+
+    const std::array<blocking, 5> blockings{
+        blocking{.name = "480, the commit at a block's end", .frames = 480},
+        blocking{.name = "600, the commit at a block's end", .frames = 600},
+        blocking{.name = "3,072, the commit mid-block", .frames = 3'072},
+        blocking{.name = "480, with an empty block there", .frames = 480, .empty_block = true},
+        blocking{
+            .name          = "480, a reset command for the block there",
+            .frames        = 480,
+            .reset_command = true,
+        },
+    };
+
+    for (const blocking& blocks : blockings) {
+        CAPTURE(blocks.name);
+
+        std::vector<stereo_frame> tape = tape_of(p1_pages, rate_48k);
+        clocked_engine            rig{blocks_of(blocks.frames), tape};
+        engine&                   audio = rig.target();
+
+        rig.steady_clock(at_sample(0), at_sample(pulse), 105);
+        rig.press(at_sample(21'354), capture_bars::one);
+
+        if (!blocks.reset_command) {
+            rig.reset(at_sample(commits));
+        }
+
+        if (blocks.empty_block || blocks.reset_command) {
+            rig.run_until(samples{commits});
+
+            if (blocks.empty_block) {
+                std::array<float, 1> none{};
+
+                audio.process(audio_block{
+                    .in_left   = std::span{none}.first(0),
+                    .in_right  = std::span{none}.first(0),
+                    .out_left  = std::span{none}.first(0),
+                    .out_right = std::span{none}.first(0),
+                });
+            }
+            else {
+                REQUIRE(audio.post(command{.type = command_type::reset_grid}));
+            }
+        }
+
+        rig.run_until(samples{commits + 600});
+
+        CHECK(audio.loop().slot == slot_state::provisional);
+        CHECK(end_of(audio.slot()) == line_7);
+        CHECK(audio.slot().first_bar() == -1);
+        CHECK(audio.slot().numbered_by_reset());
+        check_holders(audio);
+    }
+}
+
+TEST_CASE("a capture command for the block that starts as a fill-in commits comes after it")
+{
+    // The same clock and line, in blocks of 480: bar 7's fill-in commits at 21,600, a block's
+    // start. A 1-bar capture waits for it, and a 1-bar capture command applies at that block's
+    // start. The commit goes first, so the waiting capture starts, and in 47 pages, the history's
+    // 46 and the loop's one, the command's capture is refused.
+    constexpr std::int64_t pulse   = 192;
+    constexpr std::int64_t commits = (112 * pulse) + (pulse / 2);
+
+    std::vector<stereo_frame> tape = tape_of(47, rate_48k);
+    clocked_engine            rig{blocks_of(480), tape};
+    engine&                   audio = rig.target();
+
+    rig.steady_clock(at_sample(0), at_sample(pulse), 105);
+    rig.press(at_sample(21'354), capture_bars::one);
+    rig.run_until(samples{commits});
+
+    REQUIRE(audio.loop().waiting);
+    REQUIRE(audio.post(command{.type = command_type::capture, .bars = capture_bars::one}));
+
+    rig.run_until(samples{commits + 480});
+
+    CHECK(audio.loop().outcome.result == capture_result::pool_full);
+    CHECK(audio.loop().slot == slot_state::provisional);
+    CHECK(end_of(audio.slot()) == 112 * pulse);
+    check_holders(audio);
 }
 
 // ---- Resets
