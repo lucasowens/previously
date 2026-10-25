@@ -1472,6 +1472,124 @@ The stated exceptions:
   `crossfaded_seek`, so the envelope dips;
 - **a start from silence** (a late press with nothing playing): it is a fade-in, not a seam.
 
+### 5.7 Playback, as it will be built
+
+*Proposed, for approval.* Capture holds a window of the tape (§3.4); playback plays it, at native
+speed and bar-locked (Fixed mode, §3.6). One slot, as capture has. In three PRs:
+
+1. **The loop plays** (below): the player, each block rendered in segments, the bar-locked rule
+   at every line, the entry into each downbeat and `crossfaded_seek`, starting and replacing a
+   loop, and the output.
+2. **Playback under change:**
+   - the numbering changes at a reset or a retirement, by §3.6's two rules;
+   - lines learned late, joined by `crossfaded_seek` (§3.6);
+   - a slowdown at the wrap beyond 50 ms − F, taken up first by a seek inside the last bar
+     (§5.2).
+3. **The Rack controls:** the CAPTURE button and gate, the BARS control, and the slot's light.
+   From then on a loop can be heard in Rack.
+
+The first PR, by example. At 120 BPM in 4/4 at 48 kHz, a pulse is 6,000 samples and a bar 2 s.
+F is 8 ms, 384 samples; a seek is 3 ms, 144 samples. §3.4's late press, 0.3 beat into bar 21,
+holds bars 17 to 20:
+
+```
+the press, 7,200 samples into bar 21   the loop starts at once, where it would be had it
+                                       started on bar 21's line: 7,200 samples into its first
+                                       bar. A 3 ms seek from silence fades it in
+bar 22's line                          loop bar 1 (bar 18) is due, and the playhead reaches its
+                                       downbeat on the line: it plays on, no crossfade
+bar 25's line                          loop bar 0 is due again: the wrap. Over the 384 samples
+                                       before the line, the end of bar 20 crossfades into the
+                                       384 before bar 17's line, and bar 17's downbeat plays on
+                                       bar 25's line
+the clock 0.4% slower (119.5 BPM)      each natural downbeat comes 8.4 ms before its line.
+                                       F before it, the playhead crossfades into the audio
+                                       401 or 402 samples further back, and the downbeat plays
+                                       on the line: 8.4 ms of each bar's end is heard twice
+                                       (§3.6)
+```
+
+- **The player** (`loop_player`, new) plays the slot's loop, and enters a capture still waiting
+  for its line (below). Its playhead is a whole-sample position on the tape: at native speed
+  nothing finer is needed. The Q32.32 playhead of §3.6 comes with Tape mode, whose rate is not 1.
+  - It reads the loop's frames through the pages the loop holds, never the recorder's: the
+    window is behind the press, so every frame it reads is recorded, and held.
+  - **Which bar is due:** at grid bar g, loop bar (g − first bar) mod N, by its phrase position
+    (§3.6). The loop's first bar is due in the bar after the bars it holds.
+- **The bar-locked rule, at every line.** For the line of grid bar g, at time L:
+  - **the natural downbeat** is when the playhead would reach the end of the bar it is playing;
+  - **the due downbeat** plays on L's nearest sample if the natural one is a whole sample or more
+    from L, and at the natural one otherwise. So every downbeat lands less than a sample from its
+    line (§3.6);
+  - **if the due bar follows the playing one on the tape and plays at the natural downbeat,** the
+    playhead plays on: the audio before the downbeat is what preceded it in the recording;
+  - **otherwise the downbeat is entered** (§5.2): over the F samples before whichever comes first,
+    the natural downbeat or the due one, the playhead crossfades into the audio before the due
+    downbeat, timed so that the downbeat lands on its sample. The wrap is always entered.
+  - **The decision is made at its moment,** F before the earlier of the two, from the grid's
+    prediction of L then. At 4 PPQN the line's last pulse came a pulse before.
+- **The shape of every crossfade**, entry or seek (§5.2, §5.4):
+  - **The correlation** ρ of the two streams: their products summed over both channels and the
+    window, over √Σa² · √Σb² (ADR 0005), clamped to [0, 1]. Zero energy on either side counts as
+    correlated: ρ = 1. The window is the 50 ms before each stream's downbeat for an entry, and
+    the 50 ms from the seek point for a seek. It is measured once, as the crossfade begins: up to
+    4,800 stereo frames read (§2.2).
+  - **The gains,** at x from 0 to 1 over the crossfade's samples: the incoming stream's is
+    ρ · x + (1 − ρ) · √x, and the outgoing stream's is its mirror image. At ρ = 1 that is
+    equal gain, and at ρ = 0 equal power, exactly, with `std::sqrt` and no libm curve (ADR 0005).
+    Between, the blend's power is at most 0.41 dB over unity (at ρ = 0.48, 22% into the fade),
+    within §5.6's ±1 dB.
+  - The downbeat sample itself plays at full gain, after the crossfade.
+- **Starting a loop** (§3.4's "When the loop starts"):
+  - **an early press with F or more before its line:** the entry into the first downbeat begins F
+    before the line's predicted time, while the capture still waits for the line's edge. The
+    player follows the waiting capture: its pre-roll is recorded and held already;
+  - **an early press with less lead:** the entry begins at the press, shortened to the time left;
+  - **under 2 ms of lead:** the loop starts on the line with a seek, which fades the downbeat in
+    (§5.6's stated exception);
+  - **a late press:** at once, at the position it would have reached had it started on the end
+    line, with a seek;
+  - from silence, or from the loop in the slot, which is then the outgoing stream.
+- **Replacing a loop.** The loop leaving the slot keeps its pages until its last crossfade ends,
+  in a third `captured_loop` (§2.3's budget already has P1's loop being replaced). Admission
+  counts it with every other loop. A capture refused at its line after its entry began, which
+  needs a late edge at a limit, leaves the same way: the player seeks to silence.
+- **Presses during a crossfade wait** for it to end (§3.4), keeping their own timestamps, so at
+  most one loop leaves at a time. If several presses fall in one crossfade, the latest waits and
+  the earlier ones are dropped, as a double press.
+- **The block, in segments** (§10.1). The player's moments join the engine's: the start of each
+  crossfade, decided at its moment after that moment's edges, commits, checks and presses. The
+  audio between two moments is rendered with the state the first one left. So the output, not
+  only capture's decisions, is the same to the bit at any block size.
+- **The output.** Until the crossfader comes (§6, P1's next item), OUT is the live input plus the
+  loop, both at unity. With no loop, OUT is the bit-exact passthrough, as now. The sum is
+  flushed below 2⁻⁵⁰ (ADR 0005).
+- **L_out** is `engine_config::output_latency`, 0 by default and in Rack: playback reads L_out
+  ahead, so a downbeat leaves the jack on its line (§3.5).
+- **The loop report** gains whether the player plays, the loop bar playing, and the loop's
+  downbeats in the block, at most 2, with their offsets: what LED 2 and the tests read.
+- **Until the second PR:**
+  - a reset or a retirement renumbering the grid: the due bar follows the new numbering at the
+    next line, which is §3.6's first rule, even for a loop whose numbering came from no reset;
+  - a line learned too late for its entry is not joined: the loop plays on, and the next line
+    applies;
+  - a wrap more than 50 ms − F late lands early by the excess, then the next line corrects it.
+- **Host only.** Rack's controls come in the third PR.
+- **Tests:**
+  - every downbeat on its line's nearest sample for 64 bars, on whole-sample and fractional
+    periods; no drift;
+  - §3.6's 0.4% slower clock repeating 8.4 ms a bar, and a faster clock skipping;
+  - the click metric and the envelope (§5.6) on the six signals, through the wrap, a bar-locked
+    move, an early start and a replacement, and through a late start's seek and a late
+    replacement; the kick on the downbeat surviving to the sample;
+  - the shape: equal gain on correlated audio, equal power on noise, zero energy as correlated,
+    and the gains' exact bits;
+  - early presses with F, a sample less, 2 ms and a sample less of lead; a late press's position;
+  - a press during a crossfade waiting, a double press, and a capture refused after its entry;
+  - every leaving loop's pages audited;
+  - the output the same to the bit at block sizes from 1 to 3,072 frames, in the seeded property;
+  - L_out; no allocation; and a mutation round.
+
 ---
 
 ## 6. Signal flow and mixing
@@ -2055,7 +2173,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change (done: PR #22, host only); then playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change (done: PR #22, host only); then playback in two PRs, the loop plays and playback under change (§5.7, proposed); then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
