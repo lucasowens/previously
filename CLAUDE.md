@@ -111,8 +111,8 @@ however the binary is run.
   - The bar-line estimate (PR #17, DESIGN §3.4 "Where a bar line is", `bar_line.hpp`): where a
     past bar line was, from the tracker's edges, as PR #6 designed it. Host only: capture will
     call it. Its tests carry PR #6's closing review: the 132 scenarios (recovered from its probe),
-    and the jitter rows at their seed counts, which run optimized in `make seeds`. Open: whether
-    c_within should skip fill-ins (DESIGN, "As built").
+    and the jitter rows at their seed counts, which run optimized in `make seeds`. c_within skips
+    fill-ins, as measured in PR #21: counting them breaks never-worse (DESIGN, "As built").
   - Capture's first PR (PR #19, DESIGN §3.4 "Capture, as built", `capture.hpp`,
     `captured_loop.hpp`): a press, as a capture edge or a command, becomes a window of whole bars
     held through the pool. The end line, shortening against the history at the press and 47
@@ -135,10 +135,10 @@ however the binary is run.
     capture's pulses rather than planning a waiting one again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
-  grew. The stack reserve is about 3 times the deepest chain, capture's press through the
+  grew. The stack reserve is about 4.8 times the deepest chain, capture's press through the
   bar-line estimate (DESIGN §2.3).
 - **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
-  #11): flash is 71% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,
+  #11): flash is 72% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,
   `-flto` or `-ffp-contract=off`, or gains NDEBUG. If the flash budget trips, try `-Os` next and
   report the trade-off.
 - **Next:** capture under change (§3.4: presses at the exact moments their state can change,

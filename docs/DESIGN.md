@@ -246,6 +246,7 @@ build links with, so the budget follows the layout.
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
+| With the estimate reading edges in place (PR #21) | 72% (94,404 bytes) | 488 bytes more, for 1,928 bytes less stack: it reads the tracker's edges twice rather than copying them once |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -300,14 +301,16 @@ padding included, plus `.dtcmram_bss`.
 - **Today** they take 83,492 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (31,288 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 968
   capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 3 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 5.3 KB once audio runs and about 1.1 KB
-  at start-up. The 5.3 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
+- **The stack reserve** is about 4.8 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 3.4 KB once audio runs and about 1.1 KB
+  at start-up. The 3.4 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
   the DMA handler, libDaisy's callback with its two arrays of a block's samples (912 bytes at 48
   frames), the engine's `process()` (inlined into the firmware's callback), and capture's
-  `press()` (872 bytes) calling the bar-line estimate (3,136 bytes). The estimate copies the 73
-  edges around its line, 1,168 bytes, and keeps its working arrays on the stack too. Before
-  capture the deepest chain was `report_clock()`'s, about 2.1 KB in all.
+  `press()` (848 bytes) calling the bar-line estimate (1,208 bytes).
+  - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
+    sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
+    took 3,136 bytes, and the chain about 5.3 KB.
+  - Before capture the deepest chain was `report_clock()`'s, about 2.1 KB in all.
 
 Budget items so far:
 
@@ -730,8 +733,10 @@ The other notes:
 - **Against the probe.** Fed the same edges, this `float` rule and the probe's `double` one agree
   to 0.0003 samples over the 132 scenarios, and exactly over 16,000 jittered lines.
 - **Cost.** It runs on the audio thread, at a capture's press and when its lines become final.
-  Everything is in fixed arrays: 73 edges, 66 third differences, 12 second differences, and
-  2 × 8 × 7 slopes. Its time is bounded, and it allocates nothing.
+  Everything is in fixed arrays: 73 residuals in ticks, read from the tracker's edges in place,
+  66 third differences, 12 second differences, and 2 × 8 × 7 slopes, each list sorted in place
+  for its median. Its time is bounded, it allocates nothing, and its frame is 1,208 bytes in the
+  firmware (§2.3).
 - **Tests.**
   - The 132 deterministic scenarios, recovered from PR #6's probe by replaying its edits, each run
     through the real tracker. A row that keeps its edges is held to them exactly, at the line and
@@ -762,11 +767,23 @@ The other notes:
       a cell, by up to 159.5 samples (31, 11 and 159);
     - with 10 usable values and no minimum, no line came out worse (1 in 50,000), so a
       deterministic test pins the minimum instead: 15 values keep the edge, and 16 repair it.
-- **Open: *c_within*'s fill-in skip.** It was carried over from *σ̂*, where it matters (step 1),
-  without a measurement of its own. Over 25,344 ramps where the clock stops just after the line,
-  with a hiccup on the line, the skip changes 16 estimates: 12 for the worse, by up to 42
-  samples, and 4 for the better. All 16 stay within 52 samples of the line, where their raw edges
-  are 300 or 1,800 samples off. The rule keeps the skip until this is decided.
+- **Decided: *c_within* skips fill-ins** (PR #21). The skip came over from *σ̂* without a
+  measurement of its own, so it was measured against counting them. The grid: 1,077,120 ramps with
+  1 to 8 fill-ins before the line or at the end of the side after it; ramps of ±5%, ±20% and ±50%
+  over 2, 4 and 8 bars, linear and exponential, starting at every pulse from 0 to 32 before the
+  line; hiccups of 0, 30, 300 and 1,800 samples on the line; no jitter, or ±2 or ±10 samples over 8
+  seeds each.
+  - Counting fill-ins changes 4,111 estimates: 1,174 for the better and 2,937 for the worse.
+  - It leaves 100 lines worse than their raw edge, by up to 126 samples. Skipping them leaves none.
+  - Why: fill-ins before the line put the left fit off the curve. Counted, *c_within* reads less
+    curvature than *c_between*, the check fails, *c* is 0, the uncorrected sides still agree, and
+    the repair lands on their biased mean. Skipped, the correction applies, the sides disagree,
+    and the edge is kept.
+  - A first run sampled the starts at 0, 8, 16 and 32 only, 130,560 ramps. It found counting
+    better, 158 to 28, and no line worse than its edge: it missed every violation. The review of
+    PR #21 found them on a finer grid.
+  - A test pins the review's case: a ramp to +20% over 2 bars with 3 fill-ins before the line and
+    a 300-sample hiccup keeps its edge, where counting fill-ins put it 399.9 samples off.
 
 #### When the loop starts
 
@@ -1189,10 +1206,14 @@ them and never past valid data.
   a move inside the last bar (§5.2), and the wrap seam itself is unchanged.
 - **The read margin is never played at native speed,** because it begins with the next bar's
   downbeat.
-- **Too little pre-roll** does not arise from capture: a capture whose pre-roll is not in the
-  history is shortened, or refused, just after power-up too (§3.4). Were it to arise, the seam
-  would shorten to what exists, and below 2 ms, a starting value, the loop would fade out and in
-  instead.
+- **Every loop has its full pre-roll.** A capture whose pre-roll is not in the history is
+  shortened, or refused, just after power-up too (§3.4). So the seam never shortens for want of
+  audio before the start, and the seam, the correlation windows and the bar-locked moves all read
+  50 ms that exist.
+  - Decided over shortening the seam (PR #21): the cost is only a window that starts within 50 ms
+    of power-up, and one guarantee for every loop is simpler to build on than a special case.
+  - Pinned by a test: a window whose pre-roll starts at the history's first frame fits, and one
+    a sample earlier does not.
 - **A silent pre-roll** (a loop captured from the moment the music started): the seam is an 8 ms
   fade to silence before each first downbeat. It is pinned as a stated exception (§5.6).
 - **The margins also bound the correlation windows (§5.4).**

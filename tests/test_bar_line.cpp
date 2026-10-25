@@ -517,6 +517,51 @@ TEST_CASE(
     CHECK(test::estimate_planted(clock, planted_line, filled_in).curvature_values == 9);
 }
 
+constexpr auto line_index = static_cast<std::size_t>(planted_line);
+
+/// A ramp whose last `count` pulses before the line are fill-ins, flagged, going on at the last
+/// real interval, as the tracker fills them in when the clock stops. The line's own pulse is then
+/// `late` samples off.
+[[nodiscard]] line_estimate
+estimate_with_fill_ins_before(planted_clock clock, int count, double late)
+{
+    const auto line     = static_cast<std::size_t>(planted_line);
+    const auto first    = line - static_cast<std::size_t>(count);
+    const auto interval = clock.raw[first - 1] - clock.raw[first - 2];
+
+    std::vector<bool> filled_in(clock.raw.size(), false);
+
+    for (std::size_t pulse = first; pulse < line; ++pulse) {
+        clock.raw[pulse] = clock.raw[pulse - 1] + interval;
+        filled_in[pulse] = true;
+    }
+
+    clock.raw[line] += late;
+
+    return test::estimate_planted(clock, planted_line, filled_in);
+}
+
+TEST_CASE("fill-ins before the line, left out of the curvature, keep a ramp's hiccup at its edge")
+{
+    // The review of PR #21: an exponential ramp to +20% over 2 bars, starting 28 pulses before the
+    // line, 3 fill-ins before it, and a 300-sample hiccup. The fill-ins put the side before the
+    // line off the curve. Counted in c_within, they read as less curvature than the sides' slopes
+    // show, the check failed, and the uncorrected sides agreed on a mean 399.9 samples off: worse
+    // than the raw edge. Left out, the correction applies, the sides disagree, and the edge stays.
+    // Measured over 1,077,120 such ramps, counting fill-ins left 100 lines worse than their raw
+    // edge, and leaving them out none (DESIGN.md §3.4).
+    for (const bool exponential : {true, false}) {
+        CAPTURE(exponential);
+
+        const planted_clock clock    = test::ramp_starting(0.2, 2, 28, exponential);
+        const line_estimate estimate = estimate_with_fill_ins_before(clock, 3, 300.0);
+
+        CHECK(estimate.basis == line_basis::kept);
+        CHECK(to_samples(estimate.time) - clock.truth[line_index] ==
+              doctest::Approx(300.0).epsilon(1e-6));
+    }
+}
+
 TEST_CASE("sigma is exact at any tempo: the same at periods of 6,000 to 192,000 samples")
 {
     // A gate clock with its tempo doubled or halved 2 pulses before the line. Measured from the
