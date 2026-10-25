@@ -247,6 +247,7 @@ build links with, so the budget follows the layout.
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
 | With the estimate reading edges in place (PR #21) | 72% (94,404 bytes) | 488 bytes more, for 1,928 bytes less stack: it reads the tracker's edges twice rather than copying them once |
+| With capture under change (PR #22) | 72% (95,432 bytes) | 1,028 bytes more: a check at each moment, and planning again |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -298,15 +299,18 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 83,492 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (31,288 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 968
+- **Today** they take 83,572 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (31,320 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 1,000
   capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 4.8 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 3.4 KB once audio runs and about 1.1 KB
-  at start-up. The 3.4 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
-  the DMA handler, libDaisy's callback with its two arrays of a block's samples (912 bytes at 48
-  frames), the engine's `process()` (inlined into the firmware's callback), and capture's
-  `press()` (848 bytes) calling the bar-line estimate (1,208 bytes).
+- **The stack reserve** is about 4.6 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 3.6 KB once audio runs (3,592 bytes) and
+  about 1.1 KB at start-up. The 3.6 KB is `main()`'s frame and the audio interrupt: the FPU's
+  exception frame, the DMA handler, libDaisy's callback with its two arrays of a block's samples
+  (912 bytes at 48 frames), the engine's `process()` (inlined into the firmware's callback), and
+  capture's `press()` (56 bytes), which checks first (160) and can plan a waiting capture again
+  (840) through the bar-line estimate (1,208). A check at a fill-in's commit reaches the same
+  depth.
+  - Until PR #22 the press planned in its own frame (848 bytes), and the chain was 3,408 bytes.
   - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
     sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
     took 3,136 bytes, and the chain about 5.3 KB.
@@ -321,7 +325,7 @@ Budget items so far:
 | Recorder | 2 bytes per history page: 92 bytes | The history's page ids, beside two DC blockers |
 | History peaks | 2 bytes per bucket: 2,944 bytes | A level for each channel of each of the history's 1,472 buckets (§9.3) |
 | UI model | 472 bytes | What the display shows: the clock, and 128 columns of 3 bytes (§9.3) |
-| Captured loops (§3.4) | 448 bytes each, two | The slot's and a waiting capture's: 47 page ids, and 9 bar lines of 32 bytes. With its report and the press it waits on, capture is 968 bytes |
+| Captured loops (§3.4) | 448 bytes each, two | The slot's and a waiting capture's: 47 page ids, and 9 bar lines of 32 bytes. With its report, the press it waits on and the labels it was planned under, capture is 1,000 bytes |
 
 The firmware owner places these buffers explicitly.
 
@@ -483,8 +487,10 @@ never needs arming. It chooses a window of whole bars, pins the window's pages, 
     each edge and at each fill-in's commit time, and an edge at the same moment goes first
     (§10.1), so the capture sees the retirement.
 
-    Tests pin 4.5× (planned again) and 4.51× (kept and re-phased). The tracker measured 4.4×,
-    4.49× and 4.5× as retirement first, and 4.51× up to 12× as final first.
+    Tests pin both: at 4.5× the end line keeps its edge, final at the retirement, and at 4.51×
+    it is final first, at its estimate (§3.4, "Capture under change, as built"). Either way the
+    loop is kept, and playback re-phases it (§3.6). The tracker measured 4.4×, 4.49× and 4.5×
+    as retirement first, and 4.51× up to 12× as final first.
 
 #### Where a bar line is
 
@@ -883,8 +889,8 @@ In two PRs:
    - shortening and refusal;
    - admission and pinning;
    - finality, the slot, and the loop report.
-2. **Capture under change:**
-   - a press checked at the exact moments its state can change: after each edge, and at each
+2. **Capture under change** (done: PR #22, host only, below):
+   - a capture checked at the exact moments its state can change: after each edge, and at each
      fill-in's commit (§10.1);
    - planning again when labels change, or fill-ins retire;
    - the reset race and the 4.5× and 4.51× cases.
@@ -913,8 +919,8 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
 - **In the engine.**
   - **The press.** A capture edge is a third kind of `clock_event`, carrying its bar count
     (`capture_bars`). `command_type::capture` does the same from a UI or MIDI thread, at the start
-    of a block. Before an edge's press, the grid is advanced to it, so every fill-in due by then
-    has committed.
+    of a block. A press sees the grid as it is at its moment, every fill-in due by then committed
+    and every edge at that moment delivered (below).
   - **The bar lines** are `estimate_line()` once final, the raw edge before that, and the grid's
     prediction until the edge arrives; plus L_in, rounded to the nearest sample, halves up.
   - **L_in** is `engine_config::input_latency`, 0 by default. In Rack it is 0: the block adapter
@@ -932,9 +938,9 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
   pool. Shortening tries the largest of 1, 2, 4 or 8 bars, up to N, that fits both the history at
   the press and 47 pages.
 - **The slot.** One slot (§3.4). A capture takes it once its end line's edge is recorded: at the
-  press, for a late press whose line has arrived; otherwise at the end of the block that brings
-  the edge. A fill-in counts once it commits. The loop it replaces gives its pages back then.
-  Nothing plays yet; the slot holds the loop for the playback PR.
+  press, for a late press whose line has arrived; otherwise at the moment the edge arrives. A
+  fill-in counts once it commits. The loop it replaces gives its pages back then. Nothing plays
+  yet; the slot holds the loop for the playback PR.
 - **A capture that waited** is fitted again when its edge arrives: from the edge, with the reserve
   from its press. An edge later than its prediction can then shorten the capture further, or
   refuse it: nothing fits, or its pages no longer fit the pool. The loop report's outcome changes
@@ -959,13 +965,6 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
     or one bar (nothing fits): the history, or 47 pages;
   - `outcome_serial`, which changes with each outcome, including one changed when an edge
     arrives.
-- **Until the second PR:**
-  - a capture's state changes at the end of the block in which the change became known. So a
-    press later in the block that brings a waiting capture's line supersedes that capture, though
-    its line came first: within a block of the line, 32 frames in Rack (0.7 ms at 48 kHz) and
-    up to 64 ms at the engine's largest blocks, 3,072 frames;
-  - a reset keeps a held capture's pulses and its bar numbers, and a capture still waiting is
-    not planned again: it keeps its end line's pulse.
 - **Host only.** Rack's CAPTURE button and BARS control come after playback.
 - **Tests** (`test_capture.cpp`, `test_capture_floors.cpp`, `test_captured_loop.cpp`, and
   `test_rack_tape.cpp` for Rack's tape):
@@ -983,49 +982,54 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
     line at either end past what is held;
   - a loop final before its read margin is recorded, after its press and at it, holding the
     margin's pages as they come;
-  - a press in the block that brings a waiting capture's line superseding it, until the second
-    PR;
+  - a press in the block that brings a waiting capture's line coming after the capture has
+    started (until PR #22, it superseded it);
   - no allocation.
 
-  The second PR adds the reset race and 4.5×/4.51×. Playback takes the lead-time cases and the
-  crossfade tests.
+  The second PR's tests are below. Playback takes the lead-time cases and the crossfade tests.
 
-#### Capture under change, as it will be built
+#### Capture under change, as built
 
-*Proposed for the second capture PR, for approval.* The first PR changes a capture's state at the
-end of a block. This one changes it at the moment the change becomes known, so a capture comes
-out the same at any block size. It also settles what a reset or a retirement does to a capture in
-flight.
+The second capture PR (PR #22, host only). Until it, a capture's state changed at the end of the
+block in which the change became known. Now it changes at the moment the change becomes known, so
+a capture comes out the same at any block size. It also settles what a reset or a retirement does
+to a capture in flight.
 
 - **The moments.** Only news from the grid changes a capture:
   - **a clock edge.** A pulse can bring a waiting capture's end line, make a line final, apply a
     reset or retire fill-ins. A reset relabels the grid;
   - **a fill-in committing** (§3.3), half a period after its slot. On a stopped clock the first
-    commit comes 2.5 periods after the last pulse, usually two fill-ins together. The
-    tracker says when its next commit is due (`next_fill_in()`, new);
-  - **a press,** which first takes account of everything the grid knows.
+    commit comes 2.5 periods and a tick after the last pulse, usually two fill-ins together. The
+    tracker says when its next commit is due (`next_fill_in()`);
+  - **a press,** which first checks, so it sees everything the grid knows.
 - **The order within a block** (§10.1). The engine visits the moments of the block's events and
   its fill-ins' commits in time order. At each moment:
   1. every clock edge at that moment, pulses and resets in the order given;
   2. any fill-in due then commits;
-  3. the capture checks;
+  3. the capture checks (`capture::check()`);
   4. the presses at that moment, wherever they were among its edges.
 
   So an edge at the same moment as a commit goes first, and a pulse and a reset at one moment are
   seen together, in either order, as the tracker already treats them. A fill-in due exactly at a
-  block's end commits there, as the tracker's timing contract has it. The capture sees it in the
-  next block, after that block's edges at its first frame.
+  block's end commits there, as the tracker's timing contract has it. The capture sees it at the
+  next block's start, after that block's edges at its first frame. A block is at most 32
+  double-trigger spacings long (16 at 48 kHz), and fill-ins commit at least a spacing apart, so a
+  block holds at most 33 commits, which bounds the steps.
 
-  Commands still apply at a block's start, before its edges.
+  Commands still apply at a block's start, before its edges. After the recording, `follow()` only
+  holds the pages the recorder has taken.
 - **A check**, in order:
-  1. a waiting capture whose labels have changed is planned again (below);
-  2. a waiting capture whose end line's edge is recorded is fitted again from the edge and takes
-     the slot, as now;
-  3. lines whose 8 pulses have arrived are settled, in both loops;
-  4. a line whose pulse was retired keeps its edge (below).
-- **Planning again.** The labels change when a reset relabels the grid, when a reset becomes
-  pending (it labels every query at once), and when a slowed clock's fill-ins are retired. A
-  waiting capture is then planned as though pressed again at its own moment:
+  1. a line in the slot whose pulse was retired keeps its edge (below);
+  2. a waiting capture whose labels have changed is planned again (below);
+  3. a waiting capture whose end line's edge is recorded is fitted again from the edge and takes
+     the slot;
+  4. lines whose 8 pulses have arrived are settled, in both loops.
+- **Planning again.** The labels are which pulse is bar 0's, and how many retirements the tracker
+  has made (`retirements()`). They change when a reset relabels the grid, when a reset becomes
+  pending (it labels every query at once), and when a slowed clock's fill-ins are retired. Whether
+  a reset set the numbering changes only with bar 0's pulse: no capture is planned before a second
+  pulse gives a tempo, so the first reset moves bar 0 off the clock's first pulse. A waiting
+  capture is then planned as though pressed again at its own moment:
   - the same moment, and the bars it asked for. The end line is chosen again from that moment
     under the new labels, and the capture is numbered by them;
   - the window, shortening, refusal and admission are as at a press, with half a pulse of the
@@ -1035,18 +1039,19 @@ flight.
     this binds only near the shortening floors;
   - its outcome can change, and the serial changes only if it does;
   - its end line can be recorded already. It then takes the slot at once;
-  - its window can start before the pages it holds. It takes those from the history:
-    `captured_loop::hold()` learns to extend a run at its front.
+  - its window can start before the pages it holds. It takes those from the history, which still
+    has them: a run grows at its front only from pages the history holds
+    (`captured_loop::hold()`).
 
   A loop in the slot is never planned again. It keeps its pulses and its numbering (§3.4).
 - **Retired pulses.** A retirement rewinds the sequences after the last real pulse before the
   slowdown, and the real pulses take them (§3.3), so a line kept by sequence would name another
-  pulse. A line not yet final whose pulse was retired keeps its edge, and is final from then:
-  nothing can estimate it any more. The capture learns of a retirement from a count the tracker
-  keeps (`retirements()`, new).
-  - Today such a line waits until the estimate of the pulse now under its sequence would move it
-    past what the loop holds, and keeps its edge then. Measured in the 4.4× case below: 39.6
-    pulses after the last real pulse, where the retirement is at 8.8.
+  pulse. A line in the slot not yet final whose pulse was retired keeps its edge, and is final from
+  then: nothing can estimate it any more. Each check compares the slot's raw lines with the edges
+  under their sequences: a line's pulse was retired when that edge is gone or is another.
+  - Until PR #22 such a line waited until the estimate of the pulse now under its sequence would
+    move it past what the loop holds, and kept its edge then. Measured in the 4.4× case below:
+    39.6 pulses after the last real pulse, where the retirement is at 8.8.
 - **Example: a reset while a capture waits.** At 120 BPM at 4 PPQN, a pulse is 125 ms. No reset
   has numbered the bars yet. A 4-bar capture is pressed 0.2 beat before bar 17, and a sequencer
   restarts on that downbeat. Its reset arrives around the pulse:
@@ -1057,7 +1062,7 @@ flight.
                       line becomes bar 0; started at the pulse
   with the pulse      planned again and started, at the pulse     by the reset: bars −4 to −1
   1 ms after          started at the pulse, then kept             by the module: bars 13 to 16
-  first PR, any       kept as pressed                             by the module: bars 13 to 16
+  until PR #22, any   kept as pressed                             by the module: bars 13 to 16
   ```
 
   The window is the same in every row. Only the numbering differs, and it decides which of
@@ -1069,38 +1074,55 @@ flight.
   becomes bar 0, 1 ms before the press. Planned again, the capture is a late press whose end line
   is recorded: it starts at once, with a window a pulse earlier. A late press racing a reset the
   same way has already started, and keeps its window (§3.4).
-- **4.5× and 4.51×, corrected.** In §3.4's case, a loop whose end line is the first fill-in, the
-  loop takes the slot when that fill-in commits, 2.5 pulses after the last real pulse. So it has
-  started whichever comes first, the retirement or finality, and it is kept either way:
+- **4.5× and 4.51×.** In §3.4's case, a loop whose end line is the first fill-in, the loop takes
+  the slot when that fill-in commits, 2.5 pulses after the last real pulse. So it has started
+  whichever comes first, the retirement or finality, and it is kept either way:
   - **at 4.5×** the retiring pulse and the commit of the 8th pulse after the line fall at one
     moment. The edge goes first, so the capture sees the retirement. The end line's pulse is
     retired, and the line keeps its edge, final from that moment;
   - **at 4.51×** the 8th pulse commits 0.01 pulse sooner. The line takes its estimate, final
-    before the retirement.
+    before the retirement. On a jitter-free clock the estimate is the edge itself, so the two
+    differ in when the loop is final: 60 samples apart.
 
-  §3.4 listed 4.5× as "planned again", which contradicts its own rule for a loop that has started.
-  The tie that does decide between planned again and kept is a capture still waiting when its
-  line commits. A retiring pulse at that very moment plans it again; a tick later, it has started
-  and is kept. The tests pin that tie as well.
+  Until PR #22, §3.4 listed 4.5× as "planned again", which contradicted its own rule for a loop
+  that has started. The tie that does decide between planned again and kept is a capture still
+  waiting when its line commits. A retiring pulse at that very moment plans it again; a tick
+  later, it has started and is kept.
 - **What it does not change:** the press's own rules, shortening, admission, pinning and the
   report. Audio is still processed a block at a time: until playback, nothing in it depends on a
   capture's decisions (§10.1).
-- **Tests:**
+- **Tests** (`test_capture_changes.cpp`, `test_capture_seeds.cpp`, and in `test_capture.cpp`,
+  `test_captured_loop.cpp` and `test_clock_tracker.cpp`):
   - the first PR's tests keep passing, except the one pinning a press in the line's block
     superseding the waiting capture. It flips: the capture took the slot at its line, so the press
-    replaces it;
-  - a seeded property: random presses, resets, stops, slowdowns and jitter, run at block sizes
-    from 1 to 3,072 frames, with the loop report and both loops, lines and pages, the same at
-    every common block end. The long runs go in `make seeds`;
-  - each moment: a press a tick either side of a fill-in's commit; a pulse and a reset at one
-    moment in both orders; a press placed before an edge at its own moment;
-  - both examples above, each with its reset a tick either side of its pulse and of the press;
-  - retirement: a waiting capture planned again, then shortened or refused by it; a line in the
-    slot kept at its edge; 4.5× and 4.51× at several block sizes; the waiting tie, a tick either
-    side;
-  - planning again with a window that starts before its pages, and with a history that has gone;
-    every page audited throughout;
-  - no allocation, and a mutation round.
+    comes after it, and in a pool without room for both it is refused;
+  - each moment: a press a tick either side of a fill-in's commit, and at it, mid-block and at a
+    block's end; a capture whose line commits at a block's end starting in the next block, before
+    a command press there; a pulse and a reset at one moment, in both orders;
+  - both examples above, the first with its reset 1 ms and a tick either side of the pulse, the
+    second a tick either side of the press; the late press's race;
+  - 4.5× and 4.51× at blocks of 32, 480 and 3,072 frames, final at their moments and not a block
+    sooner; the waiting tie and a tick after it; a capture planned again by a retirement and
+    shortened by the history;
+  - planning again with a window that starts a page before the pages it holds, and with a history
+    that has moved on since the press, on pages of 8,192 frames;
+  - the tracker's next fill-in a tick either side, after a steady clock, a late or early hiccup, a
+    return and on the MIDI preset; its retirements counted;
+  - a seeded property: random clocks that stop, slow, drift and jitter, with resets around their
+    pulses and presses aimed at lines and commits. Each scenario runs 13.4 s at blocks of 3,072,
+    480, 32, 7 and 1 frames, and the loop report and both loops, lines and pages by number, must
+    be the same at every 107,520 samples. One scenario runs with the host tests, at three sizes,
+    and `make seeds` runs 200 at all five, in 17 s. Per size they make 4,608 presses, plan 170
+    captures again (46 then start at once, 4 are refused, and 18 change their outcome), and keep
+    47 retired lines. The first PR's engine fails 12 of the 200;
+  - no allocation.
+
+  **Mutation-checked:** 36 mutants, one per mechanism, each confirmed to build against a passing
+  baseline, all caught. The first round's survivors either had no test (more than one commit
+  between two events, planning again from the capture's own pages, the reserve from the press
+  under labels a reset set before it) and now do, or were redundant and are gone: whether a reset
+  set the labels, which changes only with bar 0's pulse, and a count of the retirements the slot
+  had been checked against, since each check compares its raw lines with their edges anyway.
 
 ### 3.5 Latency compensation
 
@@ -1805,7 +1827,7 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
     - **`loop()`**, a per-block report: the slot's state, whether a capture is waiting, and the
       last outcome (committed, shortened or refused, and why). Built (§3.4); the loop's downbeats
       in the block come with playback.
-    - **Split blocks** (the second capture PR, §3.4 "Capture under change"). The engine visits a
+    - **Split blocks.** Built (§3.4, "Capture under change, as built"). The engine visits a
       block's moments in time order: each clock and capture edge, and each fill-in's commit,
       where a capture's state can change.
       - Every decision uses only what is known at its moment.
@@ -2003,7 +2025,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change; then playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change (done: PR #22, host only); then playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |
