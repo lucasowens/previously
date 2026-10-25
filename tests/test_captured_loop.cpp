@@ -170,6 +170,73 @@ TEST_CASE("a run moved past every page it held starts again from its new first p
     CHECK(loop.pages()[1] == history.page_at(at(3)));
 }
 
+TEST_CASE("a run grows at its front from pages the history still has, and keeps those it held")
+{
+    // A capture planned again can start before the pages it held (DESIGN.md §3.4).
+    small_pool    pages{8};
+    recorder      history{pages.pool, rate_48k, history_pages};
+    captured_loop loop{pages.pool};
+
+    record_until(history, at(3, 8));
+
+    loop.assign(one_bar, 0, false);
+    loop.hold(tape_range{.first = at(2, 3), .end = at(4, 2)}, history);
+    REQUIRE(loop.pages().size() == 2U);
+
+    const page_pool::page_id page_2 = loop.pages()[0];
+    const page_pool::page_id page_3 = loop.pages()[1];
+
+    // From page 0 to page 4: pages 0 and 1 from the history, 2 and 3 kept, 4 still to come.
+    loop.hold(tape_range{.first = at(0, 1), .end = at(4, 2)}, history);
+
+    CHECK(loop.first_page() == 0);
+    CHECK(loop.page_count() == 5U);
+    REQUIRE(loop.pages().size() == 4U);
+    CHECK(loop.pages()[0] == history.page_at(at(0)));
+    CHECK(loop.pages()[1] == history.page_at(at(1)));
+    CHECK(loop.pages()[2] == page_2);
+    CHECK(loop.pages()[3] == page_3);
+
+    for (const page_pool::page_id page : loop.pages()) {
+        CHECK(pages.pool.holders(page) == 2U);
+    }
+
+    record_until(history, at(4, 1));
+    loop.catch_up(history);
+
+    REQUIRE(loop.pages().size() == 5U);
+    CHECK(loop.pages()[4] == history.page_at(at(4)));
+
+    // Pages 0 and 1 leave the history as pages 4 and 5 start, and the loop keeps them.
+    record_until(history, at(5, 1));
+    CHECK_FALSE(history.page_at(at(1)).has_value());
+    CHECK(pages.pool.holders(loop.pages()[1]) == 1U);
+}
+
+TEST_CASE("a run that grows at its front and ends sooner gives back the pages after its end")
+{
+    small_pool    pages{8};
+    recorder      history{pages.pool, rate_48k, history_pages};
+    captured_loop loop{pages.pool};
+
+    record_until(history, at(3, 8));
+
+    loop.assign(one_bar, 0, false);
+    loop.hold(tape_range{.first = at(2), .end = at(3, 8)}, history);
+    REQUIRE(loop.pages().size() == 2U);
+
+    const page_pool::page_id page_2 = loop.pages()[0];
+    const page_pool::page_id page_3 = loop.pages()[1];
+
+    loop.hold(tape_range{.first = at(1, 15), .end = at(2, 16)}, history);
+
+    CHECK(loop.first_page() == 1);
+    REQUIRE(loop.pages().size() == 2U);
+    CHECK(loop.pages()[0] == history.page_at(at(1)));
+    CHECK(loop.pages()[1] == page_2);
+    CHECK(pages.pool.holders(page_3) == 1U);
+}
+
 TEST_CASE("clearing a loop gives back every page and empties it")
 {
     small_pool    pages{8};
