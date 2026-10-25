@@ -171,6 +171,12 @@ public:
     /// Detects a stopped clock and keeps the grid running while freewheeling.
     void advance(sample_time now) noexcept;
 
+    /// When advance() will next record a fill-in, unless a pulse comes first: as the next open
+    /// slot closes while freewheeling, or, on a clock that has not yet stopped, when it reads as
+    /// stopped and every slot closed by then is filled in at once. Empty without a tempo. A
+    /// capture's state can change then (DESIGN.md §3.4).
+    [[nodiscard]] std::optional<sample_time> next_fill_in() const noexcept;
+
     [[nodiscard]] clock_state state() const noexcept;
 
     [[nodiscard]] std::int64_t pulses_per_beat() const noexcept;
@@ -226,6 +232,11 @@ public:
     /// How many times a reset has relabelled the grid. A change tells a reporter that pulses it
     /// already reported may now carry different indices.
     [[nodiscard]] std::uint32_t resets_applied() const noexcept;
+
+    /// How many times a slowed clock's fill-ins have been retired. A change tells a capture that
+    /// the sequences after the last real pulse before the slowdown now name other pulses
+    /// (DESIGN.md §3.4).
+    [[nodiscard]] std::uint32_t retirements() const noexcept;
 
     /// Whether the labels come from a reset: one applied, or one pending, which labels every
     /// query as it will once it applies. Otherwise the first pulse is 0 (DESIGN.md §3.6).
@@ -295,6 +306,7 @@ private:
 
     std::optional<sample_time> pending_reset_;
     std::uint32_t              resets_applied_{0};
+    std::uint32_t              retirements_{0};
 
     // Settings, fixed at construction.
     std::int64_t pulses_per_beat_;
