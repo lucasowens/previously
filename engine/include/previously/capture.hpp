@@ -19,7 +19,8 @@
 //      that page up to the press.
 //   5. It is admitted while the history's pages, every loop's, and its own fit in the pool, as
 //      though no page were shared. The recorder then always finds a free page.
-//   6. It holds its pages: those recorded at once, the rest as the recorder takes them.
+//   6. It holds its pages: those recorded at once, the rest as the recorder takes them, final or
+//      not, since on a fast clock its read margin can end after its 8 pulses.
 //   7. It takes the slot once its end line's edge is recorded, and the loop there gives its pages
 //      back. A capture that had to wait is fitted again then, from the edge, which can shorten it
 //      further or refuse it.

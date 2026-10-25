@@ -139,10 +139,14 @@ void capture::follow(const clock_tracker& grid) noexcept
     }
 
     // After the arrival, which may have put a new loop in the slot: its end line can be final
-    // within the block that brought it.
-    if (!slot_loop().empty() && !slot_loop().is_final()) {
+    // within the block that brought it. A final loop still holds pages to come: on a fast clock its
+    // 8 pulses end before its read margin does.
+    if (!slot_loop().empty()) {
         slot_loop().catch_up(*history_);
-        settle(slot_loop(), grid);
+
+        if (!slot_loop().is_final()) {
+            settle(slot_loop(), grid);
+        }
     }
 
     report_states();

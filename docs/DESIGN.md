@@ -245,7 +245,7 @@ build links with, so the budget follows the layout.
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
-| With capture (§3.4) | 71% (93,892 bytes) | 14,740 bytes more: capture, and the bar-line estimate it is the first to call |
+| With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -923,7 +923,9 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
   refuse it: nothing fits, or its pages no longer fit the pool. The loop report's outcome changes
   to say so.
 - **Finality.** A line is final once its 8 pulses have arrived. When every line is, the loop
-  holds only its window and margins.
+  holds only its window and margins. On a fast clock some of the read margin is still to come
+  then, since 8 pulses can be shorter than 50 ms (from 2,400 BPM at 4 PPQN, and from 400 at 24
+  PPQN). The loop holds each page of it as the recorder takes it, final or not.
   - **An estimate that would move a line past what the loop holds.** The estimate moves a line by
     at most half the tracker's pulse at the moment it is made (step 4). If the clock slowed after
     the press, that can exceed the reserve. The raw edge is then kept, as final. Example, tested:
@@ -959,6 +961,8 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
   - every page held or let go, audited, through supersede and replace;
   - lines not final at the press, on grids of 4 pulses a bar, and an estimate kept from moving a
     line at either end past what is held;
+  - a loop final before its read margin is recorded, after its press and at it, holding the
+    margin's pages as they come;
   - no allocation.
 
   The second PR adds the reset race and 4.5×/4.51×. Playback takes the lead-time cases and the

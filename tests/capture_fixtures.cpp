@@ -156,6 +156,19 @@ void check_holders(const engine& audio_engine)
     }
 
     CHECK(wrong == 0U);
+
+    // And each loop holds every page of its run the recorder has taken, final or not.
+    for (const captured_loop* loop : {&audio_engine.slot(), &audio_engine.waiting()}) {
+        std::size_t taken = 0;
+
+        for (std::size_t i = 0; i < loop->page_count(); ++i) {
+            const std::int64_t number = loop->first_page() + static_cast<std::int64_t>(i);
+
+            taken += number * page_frames < history.end().value() ? 1U : 0U;
+        }
+
+        CHECK(loop->pages().size() == taken);
+    }
 }
 
 }  // namespace previously::test

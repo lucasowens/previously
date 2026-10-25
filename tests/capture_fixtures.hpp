@@ -69,7 +69,8 @@ private:
 };
 
 /// Checks that every page of the engine's pool has exactly its holders: the history for each page
-/// in it, and each loop for each page it holds. A page held by nobody is free.
+/// in it, and each loop for each page it holds. A page held by nobody is free. And that each loop
+/// holds every page of its run the recorder has taken.
 void check_holders(const engine& audio_engine);
 
 }  // namespace previously::test

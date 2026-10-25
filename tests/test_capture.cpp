@@ -212,6 +212,75 @@ TEST_CASE("a capture waiting for its line holds each page the recorder takes mea
     check_holders(audio);
 }
 
+// On a fast clock a loop is final before its read margin has been recorded: 8 pulses of 240
+// samples are 1,920, and the margin 2,400. Bar 170's line is at 653,000, 2,360 frames before page
+// 20 starts at 655,360, so a 1-bar loop ending there needs page 20 for its margin.
+constexpr std::int64_t fast_pulse    = 240;
+constexpr std::int64_t fast_end_line = 653'000;
+
+/// The fast clock, from the bar line 170 bars before bar 170's.
+void fast_clock(clocked_engine& rig)
+{
+    constexpr std::int64_t first_pulse = fast_end_line - (170 * pulses_per_bar * fast_pulse);
+
+    rig.steady_clock(at_sample(first_pulse),
+                     at_sample(fast_pulse),
+                     (170 * pulses_per_bar) + (4 * pulses_per_bar));
+}
+
+/// The final loop in the slot holds page 20 once the recorder takes it, and keeps it once the
+/// history has moved past it.
+void check_holds_its_margin(clocked_engine& rig)
+{
+    constexpr std::int64_t page_20 = std::int64_t{20} * 32'768;
+    const captured_loop&   loop    = rig.target().slot();
+
+    REQUIRE(rig.target().loop().slot == slot_state::final);
+    REQUIRE(loop.page_count() == 2U);
+    CHECK(loop.pages().size() == 1U);
+
+    rig.run_through(at_sample(page_20));
+
+    CHECK(loop.pages().size() == 2U);
+    check_holders(rig.target());
+
+    // Once page 20 has left the history, the loop is its only holder.
+    rig.run_until(samples{std::int64_t{67} * 32'768});
+
+    CHECK(loop.pages().size() == 2U);
+    check_holders(rig.target());
+
+    if (loop.pages().size() == 2U) {
+        CHECK(rig.target().pages().holders(loop.pages()[1]) == 1U);
+    }
+}
+
+TEST_CASE("a loop final before its read margin is recorded holds the margin's pages as they come")
+{
+    std::vector<stereo_frame> tape = tape_of(p1_pages, rate_48k);
+    clocked_engine            rig{config_48k, tape};
+
+    // Final in a block before page 20, 8 pulses after its line.
+    fast_clock(rig);
+    rig.press(at_sample(fast_end_line + 300), capture_bars::one);
+    rig.run_through(at_sample(fast_end_line + (8 * fast_pulse)));
+
+    check_holds_its_margin(rig);
+}
+
+TEST_CASE("a loop final at its press holds the margin's pages as they come")
+{
+    std::vector<stereo_frame> tape = tape_of(p1_pages, rate_48k);
+    clocked_engine            rig{config_48k, tape};
+
+    // Pressed on its line's 8th pulse, so final at once, with page 20 still to come.
+    fast_clock(rig);
+    rig.press(at_sample(fast_end_line + (8 * fast_pulse)), capture_bars::one);
+    rig.run_through(at_sample(fast_end_line + (8 * fast_pulse)));
+
+    check_holds_its_margin(rig);
+}
+
 TEST_CASE("the end line is the next line at most a quarter beat away, and the latest otherwise")
 {
     // At 4 PPQN a quarter beat is one pulse: the press lands on the pulse before bar 6's line, or
@@ -567,14 +636,15 @@ TEST_CASE("a press sees the fill-ins due before it, even within its block")
     std::vector<stereo_frame> tape = tape_of(p1_pages, rate_48k);
     clocked_engine            rig{engine_config{.rate = rate_48k, .max_block_frames = 3'072}, tape};
 
-    constexpr std::int64_t fast_pulse = 200;
-    constexpr std::int64_t start_line = (2 * 3'072) - 99;
-    constexpr std::int64_t first      = start_line - (pulses_per_bar * fast_pulse);
+    constexpr std::int64_t freewheel_pulse = 200;
+    constexpr std::int64_t start_line      = (2 * 3'072) - 99;
+    constexpr std::int64_t first           = start_line - (pulses_per_bar * freewheel_pulse);
 
     // Real pulses up to 5 before bar 1's line; then the grid freewheels.
-    rig.steady_clock(at_sample(first), at_sample(fast_pulse), pulses_per_bar - 4);
+    rig.steady_clock(at_sample(first), at_sample(freewheel_pulse), pulses_per_bar - 4);
 
-    const auto pressed = at_sample(start_line + (pulses_per_bar * fast_pulse) - (fast_pulse / 2));
+    const auto pressed =
+        at_sample(start_line + (pulses_per_bar * freewheel_pulse) - (freewheel_pulse / 2));
 
     rig.press(pressed, capture_bars::one);
     rig.run_through(pressed);
