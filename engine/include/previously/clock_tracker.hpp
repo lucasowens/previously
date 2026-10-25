@@ -227,6 +227,19 @@ public:
     /// already reported may now carry different indices.
     [[nodiscard]] std::uint32_t resets_applied() const noexcept;
 
+    /// Whether the labels come from a reset: one applied, or one pending, which labels every
+    /// query as it will once it applies. Otherwise the first pulse is 0 (DESIGN.md §3.6).
+    [[nodiscard]] bool numbered_by_reset() const noexcept;
+
+    /// A pulse's sequence: its place in the order pulses were recorded, from 0, under the labels
+    /// every query uses. A reset changes indices and never sequences, so a capture keeps its
+    /// lines by sequence (DESIGN.md §3.4). Retiring a slowed clock's fill-ins rewinds the
+    /// sequences after the last real pulse, and the real pulses then take them (§3.3).
+    [[nodiscard]] std::int64_t sequence_of(std::int64_t index) const noexcept;
+
+    /// The index a sequence is labelled with now.
+    [[nodiscard]] std::int64_t index_of(std::int64_t sequence) const noexcept;
+
 private:
     clock_tracker(const clock_tracker_config& config,
                   std::span<sample_time>      filtered,

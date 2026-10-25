@@ -362,6 +362,14 @@ TEST_CASE("the history begins at its oldest page, and without pages it holds not
     CHECK(empty.begin() == empty.end());
 }
 
+TEST_CASE("the history keeps the pages asked for")
+{
+    small_pool     pages{6};
+    const recorder target{pages.pool, rate_48k, history_pages};
+
+    CHECK(target.history_pages() == history_pages);
+}
+
 // The peaks (DESIGN.md §9.3). Pages of 256 frames, so each of a page's 32 buckets is 8 frames.
 
 using peak_pool = test::pool_of<256>;

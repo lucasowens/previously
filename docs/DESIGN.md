@@ -110,8 +110,8 @@ time slice, to leave headroom for interrupt jitter and UI work.
 about **174 s** of stereo audio in total.
 
 **Paged tape** (ADR 0004). All loop audio lives in one pool of fixed-size **pages**. Audio is
-never copied; loops hold pages. The pool and the recorder are built (`page_pool`, `recorder`);
-loops and captures come with capture (§3.4).
+never copied; loops hold pages. The pool, the recorder and capture are built (`page_pool`,
+`recorder`, `capture`); playing a loop comes with playback (§3.4).
 
 - **A page** is the smallest power-of-two number of stereo frames that lasts at least as long as
   2¹⁵ frames at 48 kHz (0.68267 s):
@@ -129,9 +129,8 @@ loops and captures come with capture (§3.4).
   current one fills, and gives a page back once it is older than the history and no loop holds it.
   - **Page n and page n − 46 share a slot** in the recorder's ring, so the old page goes back
     before the new one is taken. The recorder never holds more than the history.
-  - **A page is free whenever one is needed.** The pool has at least the history's pages, the
-    recorder is today their only holder, and captures will be admitted only while that stays
-    true. Should the pool be empty all the same, that page goes unrecorded and recording resumes
+  - **A page is free whenever one is needed.** The pool has at least the history's pages, and
+    a capture is admitted only while the history and every loop's pages fit in it (§3.4). Should the pool be empty all the same, that page goes unrecorded and recording resumes
     on the next. The history has a hole; no loop's audio is touched. The DC blocker runs on
     through the hole, so what is recorded after it is unchanged.
 - **A loop** holds the ids of the pages its window touches, with a reference count on each. When
@@ -167,9 +166,8 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
   - up to two partial pages.
 
   That is a span of at most 46 pages, 31.4 s at 48 kHz. A capture that would need more is
-  shortened. The limit binds only at slow tempos: below 7.91, 15.57 and 30.91 BPM for 1, 2 and
-  4 bars at 4 PPQN, and never for 8 bars. Without it, a 1-bar capture at 7.4 BPM would hold 51
-  pages.
+  shortened. The limit binds only at slow tempos: below 7.91, 15.57, 30.91 and 61.58 BPM for 1,
+  2, 4 and 8 bars at 4 PPQN (§3.4). Without it, a 1-bar capture at 7.4 BPM would hold 51 pages.
 - A capture is admitted only if every loop's pages plus the history still fit. The recorder
   therefore never runs out, and the history is never interrupted, however many loops exist.
 - P1 needs at most 3 × 47 + 46 = 187 pages: two slots, one of them being replaced, with one
@@ -218,8 +216,8 @@ N + 1 bars plus the pre-roll (50 ms, §5.3) fit in 30.7 s. In 4/4:
 
     The 192 kHz sizing is kept because nobody performs at 768 kHz. A tape sized for it would be
     840 MiB of address space per instance, the same resident memory at a given rate, and 840 MiB
-    of commit on Windows (below). Capture owes a test here: with 52 pages, a capture that needs 7
-    is refused and the history stays whole.
+    of commit on Windows (below). A test pins this: with 52 pages, a capture that needs 7 is
+    refused, and one that needs 6 is held while the history laps with every page in use.
   - **Not measured:** Windows and Linux. The Windows heap is expected to serve a block this large
     with `VirtualAlloc(MEM_COMMIT)`, so all 210 MiB would count against the commit limit at once
     (Private Bytes) while staying out of the working set until written; many instances would run
@@ -247,6 +245,7 @@ build links with, so the budget follows the layout.
 | With the tape, recorder and DC blocker (P1) | 83% (108,832 bytes) | 10,356 bytes more unoptimized; 1,632 at `-O3` with LTO |
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
+| With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -298,16 +297,17 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 82,404 bytes (71%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (30,248 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 472 the
-  UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 8 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 2.1 KB once audio runs and about 1.1 KB
-  at start-up. The 2.1 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
+- **Today** they take 83,492 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (31,288 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 968
+  capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
+- **The stack reserve** is about 3 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 5.3 KB once audio runs and about 1.1 KB
+  at start-up. The 5.3 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
   the DMA handler, libDaisy's callback with its two arrays of a block's samples (912 bytes at 48
-  frames), and the engine's `process()` (inlined into the firmware's callback) and
-  `report_clock()`, whose array of 33 grid points is 528 bytes. Optimized, the engine's frames
-  are larger, holding what it inlines; unoptimized, the same chains summed to about 1.8 KB.
+  frames), the engine's `process()` (inlined into the firmware's callback), and capture's
+  `press()` (872 bytes) calling the bar-line estimate (3,136 bytes). The estimate copies the 73
+  edges around its line, 1,168 bytes, and keeps its working arrays on the stack too. Before
+  capture the deepest chain was `report_clock()`'s, about 2.1 KB in all.
 
 Budget items so far:
 
@@ -318,7 +318,7 @@ Budget items so far:
 | Recorder | 2 bytes per history page: 92 bytes | The history's page ids, beside two DC blockers |
 | History peaks | 2 bytes per bucket: 2,944 bytes | A level for each channel of each of the history's 1,472 buckets (§9.3) |
 | UI model | 472 bytes | What the display shows: the clock, and 128 columns of 3 bytes (§9.3) |
-| Loop page tables (P1, planned) | 2 bytes per page | At most 47 pages per loop |
+| Captured loops (§3.4) | 448 bytes each, two | The slot's and a waiting capture's: 47 page ids, and 9 bar lines of 32 bytes. With its report and the press it waits on, capture is 968 bytes |
 
 The firmware owner places these buffers explicitly.
 
@@ -800,31 +800,50 @@ The other notes:
   the case whenever 8 pulses after it have arrived, which at 4 PPQN is always (a bar has 16).
   Otherwise half a period is reserved before the start line too.
 
-  Admission reserves those pages, and the recorder pins each page it allocates while the capture
-  is in flight. When the capture becomes final, it releases the pages its window does not use.
+  Admission reserves those pages, and the capture holds each page the recorder takes in the
+  block it takes it, while the capture is in flight. When the capture becomes final, it releases
+  the pages its window does not use.
 - **Shortened captures.** A capture is shortened to the largest of 1, 2, 4 or 8 bars that both
   fits the history at its press and keeps within 47 pages (§2.3). At slow tempos this is routine.
+  - **The history at a press** is the 45 pages before the press's page, and that page up to the
+    press: between 45 pages and 46 less a sample, whatever the blocks. A window fits it when its
+    pre-roll does.
+  - **47 pages:** the window, its margins and any reserve span at most 46 pages of frames, so
+    that they touch at most 47 however they fall.
+
   The floors, in BPM at 4 PPQN in 4/4:
 
   | Bars | Any press fits from | Every early press fits from | No press fits below |
   |---|---|---|---|
-  | 1 | 15.65 | 7.91 | 7.91 |
-  | 2 | 23.48 | 15.65 | 15.57 |
-  | 4 | 39.13 | 31.30 | 30.91 |
-  | 8 | 70.43 | 62.60 | 62.11 |
+  | 1 | 15.16 | 7.91 | 7.91 |
+  | 2 | 22.99 | 15.65 | 15.57 |
+  | 4 | 38.64 | 31.30 | 30.91 |
+  | 8 | 69.94 | 62.60 | 61.58 |
 
-  - **Any press:** the history at its tightest, for a late press up to a bar after its line
-    (§2.3).
-  - **Every early press:** a press on its line, with no lead.
-  - **No press:** an early press with ¼ beat of lead. Where the 47-page limit binds first, the
-    floor is that limit's: for 1, 2 and 4 bars, and for 1 bar in the early-press column.
+  - **Any press:** the latest late press, a quarter beat and a tick before the next line, so a
+    bar less a quarter beat after its own, made at the start of a page, where the history is
+    shortest.
+  - **Every early press:** a tick before its line, at the start of a page.
+  - **No press:** the most favourable press, an early press a quarter beat before its line, at the
+    end of a page, where the history is longest. The 47-page limit binds there first, for every
+    bar count: the history alone would hold 8 bars from 60.76 BPM. In the early-press column it
+    binds first for 1 bar; the history binds everywhere else.
+
+  Bisected against the engine to four decimals: 15.1614, 22.9866, 38.6371 and 69.9380; 7.9067,
+  15.6505, 31.3009 and 62.6019; 7.9067, 15.5737, 30.9079 and 61.5762. Tests check each floor a
+  hundredth of a BPM either side.
+
+  Until the first capture PR this table gave the history a whole bar after the end line in the
+  first column, where a late press reaches less than a bar; and 45 pages in the last, where the
+  most favourable press has nearly 46.
 
   Every column uses the same reserve rule: half a period after the end line only (pinning,
   above).
 
   A capture is also shortened just after power-up, or when the clock started recently.
 - **Refused captures.** A capture is refused when not even one bar fits, when there is no tempo
-  yet, or when the pool can't take its pages (§2.3). The loop report says which.
+  yet, or when the pool can't take its pages (§2.3). The loop report says which. A capture that
+  waited for its line can be refused when the line arrives (below).
 - **The bar count** is taken at the press.
 - **A new press while a capture is in flight:**
   - an early press still waiting for its line is superseded by the new one;
@@ -834,6 +853,125 @@ The other notes:
     loop as above, and becomes the one in flight.
 - **Forward recording** uses the same mechanism: start at the next bar line, stop after N bars or
   at a second press. It comes after P1.
+
+#### Capture, as built
+
+Capture turns a press into a window of the tape, held. Playing it is the next stage (§3.6, §5).
+In two PRs:
+
+1. **The window and its pages** (done: PR #19, host only):
+   - the press, as an edge in the block or as a command;
+   - the end line;
+   - the window, from the bar-line estimate plus L_in;
+   - shortening and refusal;
+   - admission and pinning;
+   - finality, the slot, and the loop report.
+2. **Capture under change:**
+   - a press checked at the exact moments its state can change: after each edge, and at each
+     fill-in's commit (§10.1);
+   - planning again when labels change, or fill-ins retire;
+   - the reset race and the 4.5× and 4.51× cases.
+
+The first PR, by example. At 120 BPM in 4/4 at 48 kHz, a pulse is 6,000 samples and a bar 2 s.
+
+```
+press 0.3 beat into bar 21     a late press: the end line is bar 21's, just past
+window                         bars 17 to 20, [line 17, line 21), 384,000 frames
+held at the press              line 17 − 50 ms  to  line 21 + 50 ms + half a pulse: pages 49
+                               to 61, with the clock started at sample 0
+final                          2 beats after line 21, once its 8 pulses have arrived
+then                           any page held only for the reserve goes back. Here none is:
+                               line 21 + 50 ms ends in page 61, as the reserve did
+
+press 0.2 beat before bar 16   an early press: the end line is bar 16's, still to come
+window                         bars 12 to 15
+held                           pages 35 to 46, recorded so far. Page 47, which starts 4,096
+                               frames after line 16, is held for the read margin and the
+                               reserve as the recorder takes it
+at line 16                     the capture takes the slot, provisional
+final                          8 pulses later. Line 16 + 50 ms ends in page 46, so page 47 goes
+                               back
+```
+
+- **In the engine.**
+  - **The press.** A capture edge is a third kind of `clock_event`, carrying its bar count
+    (`capture_bars`). `command_type::capture` does the same from a UI or MIDI thread, at the start
+    of a block. Before an edge's press, the grid is advanced to it, so every fill-in due by then
+    has committed.
+  - **The bar lines** are `estimate_line()` once final, the raw edge before that, and the grid's
+    prediction until the edge arrives; plus L_in, rounded to the nearest sample, halves up.
+  - **L_in** is `engine_config::input_latency`, 0 by default. In Rack it is 0: the block adapter
+    hands the engine each block's audio with the clock edges of the same block. The device's comes
+    with calibration (§3.5).
+- **What a capture holds** (`captured_loop`):
+  - its N + 1 bar lines, each with its pulse, its time, its position on the tape, and whether it
+    is predicted, a raw edge or final. A line keeps its pulse by sequence, which no reset changes;
+  - the bar number of its first line under the labels at the press, for the phrase positions,
+    and whether a reset had set them (§3.6);
+  - a run of at most 47 pages through the pool: those recorded at the press at once, and each
+    later one in the block the recorder takes it.
+- **Admission.** Admission counts the capture's pages as though none were shared with the
+  history. It is admitted while the history's 46, every loop's pages, and its own fit in the
+  pool. Shortening tries the largest of 1, 2, 4 or 8 bars, up to N, that fits both the history at
+  the press and 47 pages.
+- **The slot.** One slot (§3.4). A capture takes it once its end line's edge is recorded: at the
+  press, for a late press whose line has arrived; otherwise at the end of the block that brings
+  the edge. A fill-in counts once it commits. The loop it replaces gives its pages back then.
+  Nothing plays yet; the slot holds the loop for the playback PR.
+- **A capture that waited** is fitted again when its edge arrives: from the edge, with the reserve
+  from its press. An edge later than its prediction can then shorten the capture further, or
+  refuse it: nothing fits, or its pages no longer fit the pool. The loop report's outcome changes
+  to say so.
+- **Finality.** A line is final once its 8 pulses have arrived. When every line is, the loop
+  holds only its window and margins. On a fast clock some of the read margin is still to come
+  then, since 8 pulses can be shorter than 50 ms (from 2,400 BPM at 4 PPQN, and from 400 at 24
+  PPQN). The loop holds each page of it as the recorder takes it, final or not.
+  - **An estimate that would move a line past what the loop holds.** The estimate moves a line by
+    at most half the tracker's pulse at the moment it is made (step 4). If the clock slowed after
+    the press, that can exceed the reserve. The raw edge is then kept, as final. Example, tested:
+    bar 6's pulse 3,100 samples early at 120 BPM, then 6,300-sample pulses. The estimate repairs
+    the line by 3,100, and its 50 ms would end 100 samples past the loop's last frame.
+- **Presses in flight.** An early press still waiting for its line is superseded by a new press,
+  even one that is then refused. A press whose capture takes the slot replaces the loop there,
+  final or not. The wait during an entry crossfade comes with playback, which has crossfades.
+- **The loop report** (`engine::loop()`, §10.1), as of each block's end:
+  - `slot`: empty, provisional or final;
+  - `waiting`: whether a capture is waiting for its end line;
+  - `outcome`: committed, shortened or refused (no tempo, nothing fits, or the pool is full), with
+    the bars asked for and held. Its `limit` says what kept out the next larger count (shortened)
+    or one bar (nothing fits): the history, or 47 pages;
+  - `outcome_serial`, which changes with each outcome, including one changed when an edge
+    arrives.
+- **Until the second PR:**
+  - a capture's state changes at the end of the block in which the change became known. So a
+    press later in the block that brings a waiting capture's line supersedes that capture, though
+    its line came first: within a block of the line, 32 frames in Rack (0.7 ms at 48 kHz) and
+    up to 64 ms at the engine's largest blocks, 3,072 frames;
+  - a reset keeps a held capture's pulses and its bar numbers, and a capture still waiting is
+    not planned again: it keeps its end line's pulse.
+- **Host only.** Rack's CAPTURE button and BARS control come after playback.
+- **Tests** (`test_capture.cpp`, `test_capture_floors.cpp`, `test_captured_loop.cpp`, and
+  `test_rack_tape.cpp` for Rack's tape):
+  - each shortening floor in the table above, a hundredth of a BPM either side, pressed at the
+    moment that decides it;
+  - the history and the 46-page span to the sample: a window whose pre-roll starts at the
+    history's first frame fits and one a sample earlier does not; a run of exactly 46 pages
+    fits and one a sample longer does not;
+  - the end line a tick either side of ¼ beat, and on the line;
+  - refusal for each reason, and at the line;
+  - Rack's 52-page tape at 768 kHz: a capture needing 7 pages is refused, and one needing 6 is
+    held while the history laps with all 52 pages in use;
+  - every page held or let go, audited, through supersede and replace;
+  - lines not final at the press, on grids of 4 pulses a bar, and an estimate kept from moving a
+    line at either end past what is held;
+  - a loop final before its read margin is recorded, after its press and at it, holding the
+    margin's pages as they come;
+  - a press in the block that brings a waiting capture's line superseding it, until the second
+    PR;
+  - no allocation.
+
+  The second PR adds the reset race and 4.5×/4.51×. Playback takes the lead-time cases and the
+  crossfade tests.
 
 ### 3.5 Latency compensation
 
@@ -1051,8 +1189,10 @@ them and never past valid data.
   a move inside the last bar (§5.2), and the wrap seam itself is unchanged.
 - **The read margin is never played at native speed,** because it begins with the next bar's
   downbeat.
-- **Too little pre-roll** (a capture just after power-up): the seam shortens to what exists.
-  Below 2 ms, a starting value, the loop fades out and in instead.
+- **Too little pre-roll** does not arise from capture: a capture whose pre-roll is not in the
+  history is shortened, or refused, just after power-up too (§3.4). Were it to arise, the seam
+  would shorten to what exists, and below 2 ms, a starting value, the loop would fade out and in
+  instead.
 - **A silent pre-roll** (a loop captured from the moment the music started): the seam is an 8 ms
   fade to silence before each first downbeat. It is pinned as a stated exception (§5.6).
 - **The margins also bound the correlation windows (§5.4).**
@@ -1525,13 +1665,14 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
   - Commands (from UI, MIDI or tests) arrive through a **lock-free
     single-producer/single-consumer queue** and are applied at the start of the next block,
     quantized to the grid where relevant. For example, `reset_grid` acts like the reset input.
-  - **Retro capture (P1, planned) adds:**
+  - **Retro capture (P1) adds:**
     - **a capture edge** among the block's events (the button or the gate, timed to the sample),
       carrying the bar count. Edges sampled on the audio thread, as in Rack, arrive this way. The
-      command queue remains for UI and MIDI threads.
-    - **`loop()`**, a per-block report: the slot's state, the last outcome (committed, shortened
-      or refused, and why) and the loop's downbeats in the block.
-    - **Split blocks.** The engine processes a block in segments. It splits at each clock and
+      command queue remains for UI and MIDI threads. Built (§3.4).
+    - **`loop()`**, a per-block report: the slot's state, whether a capture is waiting, and the
+      last outcome (committed, shortened or refused, and why). Built (§3.4); the loop's downbeats
+      in the block come with playback.
+    - **Split blocks** (the second capture PR). The engine processes a block in segments. It splits at each clock and
       capture edge, and at each moment a capture's state can change (a fill-in committing).
       - Every decision uses only what is known at its moment.
       - An edge at the same moment as such a check goes first.
@@ -1544,7 +1685,8 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
   (§2.3). `history()` reads back what the recorder has kept.
   - **Nothing is allocated after construction**, and the region is not touched before the first
     `process()`.
-  - Without a region nothing is recorded, captures will be refused, and the engine otherwise
+  - Without a region nothing is recorded, every capture is refused (nothing fits: the history
+    is empty), and the engine otherwise
     behaves as before.
   - Members are declared so the pool outlives everything that holds its pages. The pool's
     destructor expects every count to be zero, and the recorder's gives its pages back.
@@ -1725,7 +1867,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); then capture and playback in three PRs: the bar-line estimate (done: PR #17, host only), capture, and playback; then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change; then playback; then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |

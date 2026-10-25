@@ -75,6 +75,9 @@ public:
     /// How long a bucket is: 1/32 of a page, 1,024 frames (21.3 ms) at 48 kHz.
     [[nodiscard]] samples bucket_frames() const noexcept;
 
+    /// How many pages the history keeps: as asked, unless a pool with pages has fewer.
+    [[nodiscard]] std::size_t history_pages() const noexcept;
+
     /// The page holding `position`. Empty when the position is not recorded yet, is older than
     /// the history, or fell on a page the pool could not supply. A capture adds itself as a
     /// holder to keep the audio once the history has moved on.

@@ -87,6 +87,13 @@ public:
         return samples{floor_divide(ticks_, ticks_per_sample)};
     }
 
+    /// The nearest whole sample, halves up (toward plus infinity, also for negative times): where
+    /// a capture cuts the tape at a bar line (DESIGN.md §3.4).
+    [[nodiscard]] constexpr samples nearest_sample() const noexcept
+    {
+        return samples{floor_divide(ticks_ + (ticks_per_sample / 2), ticks_per_sample)};
+    }
+
     /// The fractional part, in [0, 1).
     [[nodiscard]] constexpr float fraction() const noexcept
     {

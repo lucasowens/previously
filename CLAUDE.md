@@ -76,7 +76,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#17)
+## Current state (after PRs #1–#19)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -113,6 +113,13 @@ however the binary is run.
     call it. Its tests carry PR #6's closing review: the 132 scenarios (recovered from its probe),
     and the jitter rows at their seed counts, which run optimized in `make seeds`. Open: whether
     c_within should skip fill-ins (DESIGN, "As built").
+  - Capture's first PR (PR #19, DESIGN §3.4 "Capture, as built", `capture.hpp`,
+    `captured_loop.hpp`): a press, as a capture edge or a command, becomes a window of whole bars
+    held through the pool. The end line, shortening against the history at the press and 47
+    pages, admission, pinning as the recorder takes pages, fitting a waiting capture again at its
+    edge, finality, one slot, and `engine::loop()`. Host only. The shortening floors were
+    corrected and bisected against the engine. The host tests now take about 45 s under ASan,
+    most of it recording the floors' and Rack's 768 kHz histories.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -123,14 +130,18 @@ however the binary is run.
     full-length loop cannot be replaced, and 52 at 705.6 and 768 kHz, where loops get 6 pages
     and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
     at: 184 MiB at 768 kHz. A rate change starts the history again
+  - Until capture's second PR: a capture's state changes at block ends, so a press in the block
+    that brings a waiting capture's line supersedes it; and a reset keeps a held or waiting
+    capture's pulses rather than planning a waiting one again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. The RAM budget (71% now) keeps the bootloader layout open; if it trips, report what
-  grew.
+  asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
+  grew. The stack reserve is about 3 times the deepest chain, capture's press through the
+  bar-line estimate (DESIGN §2.3).
 - **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
-  #11): flash is 60% and RAM 71%, and T0 fails the build if an engine source loses `-O3`,
+  #11): flash is 71% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,
   `-flto` or `-ffp-contract=off`, or gains NDEBUG. If the flash budget trips, try `-Os` next and
   report the trade-off.
-- **Next:** capture (§3.4: which bars, shortening and refusal, pinning, presses in flight), then
-  playback (§5, §3.6), then the Rack controls. PR #6's closing review lists the tests each owes,
-  and DESIGN §2.3 adds one for Rack's 52-page tape; the crossfade-bits test and the floor test
-  through the seam correlation belong to playback.
+- **Next:** capture under change (§3.4: presses at the exact moments their state can change,
+  planning again when labels change or fill-ins retire, the reset race and 4.5×/4.51×), then
+  playback (§5, §3.6), then the Rack controls. The crossfade-bits test and the floor test through
+  the seam correlation belong to playback.

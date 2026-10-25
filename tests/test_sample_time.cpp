@@ -40,6 +40,14 @@ static_assert(floor_modulo(-1, 16) == 15);
 static_assert(floor_modulo(-16, 16) == 0);
 static_assert(floor_modulo(-17, 16) == 15);
 
+// nearest_sample rounds halves up, for negative times too: a tick either side of a half decides.
+static_assert(sample_time::from_ticks(32'767).nearest_sample() == samples{0});
+static_assert(sample_time::from_ticks(32'768).nearest_sample() == samples{1});
+static_assert(sample_time::from_ticks(65'536).nearest_sample() == samples{1});
+static_assert(sample_time::from_ticks(-32'768).nearest_sample() == samples{0});
+static_assert(sample_time::from_ticks(-32'769).nearest_sample() == samples{-1});
+static_assert(sample_time::from_ticks(-98'304).nearest_sample() == samples{-1});
+
 TEST_CASE("a fractional time splits into whole samples and a fraction")
 {
     const sample_time time = sample_time::from_samples(samples{1'000}, 0.25F);

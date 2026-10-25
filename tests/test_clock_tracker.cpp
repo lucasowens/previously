@@ -1242,6 +1242,54 @@ TEST_CASE("edges carry the same labels as every other query, even while a reset 
     }
 }
 
+TEST_CASE(
+    "a pulse keeps its sequence through a reset, and the labels say whether a reset made them")
+{
+    const auto truth = steady_clock(0.0, gate_period, 44);
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    feed(clock.tracker, std::span{truth}.first(40));
+
+    // Before any reset, the first pulse is 0: index and sequence agree.
+    CHECK_FALSE(clock.tracker.numbered_by_reset());
+    CHECK(clock.tracker.sequence_of(39) == 39);
+    CHECK(clock.tracker.index_of(39) == 39);
+
+    // A pending reset two pulses ahead labels every query already: pulse 39 is -2.
+    clock.tracker.reset(at(truth[39] + (gate_period * 2.0)));
+
+    CHECK(clock.tracker.numbered_by_reset());
+    CHECK(clock.tracker.sequence_of(-2) == 39);
+    CHECK(clock.tracker.index_of(39) == -2);
+
+    // Once it applies, the labels stay as they were announced.
+    feed(clock.tracker, std::span{truth}.subspan(40));
+
+    REQUIRE(clock.tracker.resets_applied() == 1U);
+    CHECK(clock.tracker.numbered_by_reset());
+    CHECK(clock.tracker.index_of(41) == 0);
+    CHECK(clock.tracker.sequence_of(2) == 43);
+}
+
+TEST_CASE("a reset pending before the tempo is known does not yet label anything")
+{
+    // With one pulse there is nothing to place the reset with, so the labels are still the
+    // module's own count until the second pulse applies it.
+    const auto truth = steady_clock(0.0, gate_period, 2);
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+    clock.tracker.pulse(at(truth[0]));
+    clock.tracker.reset(at(truth[1]));
+
+    CHECK_FALSE(clock.tracker.numbered_by_reset());
+    CHECK(clock.tracker.index_of(0) == 0);
+
+    clock.tracker.pulse(at(truth[1]));
+
+    CHECK(clock.tracker.numbered_by_reset());
+    CHECK(clock.tracker.index_of(1) == 0);
+}
+
 // A word of flags holds 32 pulses, so 33 need a second word.
 static_assert(std::tuple_size_v<decltype(clock_history<32>::fill_in_bits)> == 1);
 static_assert(std::tuple_size_v<decltype(clock_history<33>::fill_in_bits)> == 2);
