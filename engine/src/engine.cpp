@@ -76,33 +76,55 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
 
     apply_pending_commands(block_start);
 
-    // The block's edges in time order, then the end of the block: the tracker's timing contract.
-    std::optional<sample_time> previous_offset;
+    // The block's moments in time order: each event's, and each fill-in's commit between them. A
+    // fill-in that committed at the previous block's end is seen here, after any edge at this
+    // block's first frame, which goes first.
+    if (events.empty() || events.front().offset > sample_time{}) {
+        capture_.check(block_start, clock_tracker_);
+    }
 
-    for (const clock_event& event : events) {
-        expects(event.offset >= sample_time{} && event.offset < sample_time::from_samples(frames));
-        expects(!previous_offset || event.offset >= *previous_offset);
-        previous_offset = event.offset;
+    std::size_t next = 0;
 
-        const sample_time when = block_start + event.offset;
+    while (next < events.size()) {
+        const sample_time offset = events[next].offset;
+        const sample_time when   = block_start + offset;
 
-        switch (event.type) {
-            case clock_event_type::pulse:
-                clock_tracker_.pulse(when);
-                break;
+        expects(offset >= sample_time{} && offset < sample_time::from_samples(frames));
+        expects(next == 0 || offset >= events[next - 1].offset);
 
-            case clock_event_type::reset:
-                clock_tracker_.reset(when);
-                break;
+        follow_grid(when);
 
-            case clock_event_type::capture:
-                // The grid as it is at the press, with every fill-in due by then committed.
-                clock_tracker_.advance(when);
-                capture_.press(when, event.bars, clock_tracker_);
-                break;
+        // The clock edges at this moment, in the order given, then what they changed, then its
+        // presses: the tracker's timing contract, and a press that sees every edge at its moment.
+        std::size_t moment_end = next;
+
+        for (; moment_end < events.size() && events[moment_end].offset == offset; ++moment_end) {
+            switch (events[moment_end].type) {
+                case clock_event_type::pulse:
+                    clock_tracker_.pulse(when);
+                    break;
+
+                case clock_event_type::reset:
+                    clock_tracker_.reset(when);
+                    break;
+
+                case clock_event_type::capture:
+                    break;
+            }
+        }
+
+        clock_tracker_.advance(when);
+        capture_.check(when, clock_tracker_);
+
+        for (; next < moment_end; ++next) {
+            if (events[next].type == clock_event_type::capture) {
+                capture_.press(when, events[next].bars, clock_tracker_);
+            }
         }
     }
 
+    // A fill-in due at the block's end commits there, and is seen in the next block.
+    follow_grid(block_end);
     clock_tracker_.advance(block_end);
 
     std::ranges::copy(block.in_left, block.out_left.begin());
@@ -110,9 +132,8 @@ void engine::process(const audio_block& block, std::span<const clock_event> even
 
     recorder_.record(block.in_left, block.in_right);
 
-    // Once the block is recorded: the pages a capture holds as the recorder takes them, and lines
-    // that arrived or became final during the block.
-    capture_.follow(clock_tracker_);
+    // Once the block is recorded: the pages a capture holds as the recorder takes them.
+    capture_.follow();
 
     sample_clock_ += frames;
 
@@ -201,6 +222,23 @@ void engine::apply(const command& request, sample_time block_start) noexcept
         case command_type::capture:
             capture_.press(block_start, request.bars, clock_tracker_);
             break;
+    }
+}
+
+void engine::follow_grid(sample_time until) noexcept
+{
+    // Bounded: fill-ins commit at least a double-trigger spacing apart, and max_block_frames()
+    // keeps a block to 32 spacings at most (16 at 48 kHz), so a block holds at most 33 commits,
+    // the moment the clock reads as stopped among them.
+    for (std::size_t step = 0; step <= clock_report::max_pulses; ++step) {
+        const std::optional<sample_time> due = clock_tracker_.next_fill_in();
+
+        if (!due || *due >= until) {
+            return;
+        }
+
+        clock_tracker_.advance(*due);
+        capture_.check(*due, clock_tracker_);
     }
 }
 

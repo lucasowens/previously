@@ -29,6 +29,7 @@ add_executable(previously_tests
     test_engine_tape.cpp
     test_captured_loop.cpp
     test_capture.cpp
+    test_capture_changes.cpp
     test_capture_floors.cpp
     test_wav.cpp
     test_block_adapter.cpp
@@ -57,14 +58,17 @@ previously_apply_strict_options(previously_tests)
 
 add_test(NAME unit COMMAND previously_tests)
 
-# The bar-line estimate's seeded properties, at PR #6's seed counts (DESIGN.md §3.4): over a
-# million estimates, which take about a minute under the sanitizers. They run in their own
-# executable, registered only in builds without sanitizers: `make seeds` runs them from the release
-# preset, and `make test` and CI run `make seeds`.
+# Seeded properties too slow for the sanitizers: the bar-line estimate's at PR #6's seed counts
+# (DESIGN.md §3.4), over a million estimates that take about a minute under the sanitizers; and
+# capture at every block size over 200 scenarios (§3.4, "Capture under change"). They run in their
+# own executable, registered only in builds without sanitizers: `make seeds` runs them from the
+# release preset, and `make test` and CI run `make seeds`.
 add_executable(previously_seed_tests
     test_main.cpp
     planted_clock.cpp
+    capture_fixtures.cpp
     test_bar_line_seeds.cpp
+    test_capture_seeds.cpp
 )
 
 target_link_libraries(previously_seed_tests PRIVATE
@@ -76,8 +80,8 @@ target_link_libraries(previously_seed_tests PRIVATE
 previously_apply_strict_options(previously_seed_tests)
 
 if(NOT PREVIOUSLY_SANITIZE)
-    add_test(NAME bar_line_seeds COMMAND previously_seed_tests)
-    set_tests_properties(bar_line_seeds PROPERTIES LABELS seeds)
+    add_test(NAME seeded_properties COMMAND previously_seed_tests)
+    set_tests_properties(seeded_properties PROPERTIES LABELS seeds)
 endif()
 
 # T3: golden render regression. Renders every stimulus in golden/stimulus and compares the result

@@ -77,9 +77,10 @@ public:
 
     /// Audio thread. Applies pending commands, feeds the block's clock events to the grid and its
     /// capture presses to capture, then processes the audio. Events must be in time order with
-    /// offsets inside the block. At the same moment, an adapter puts a press after the edges, so
-    /// that the press sees them (DESIGN.md §10.1). Realtime-safe: no allocation, no locks,
-    /// bounded time.
+    /// offsets inside the block. Capture is checked at every moment its state can change: after
+    /// the clock edges at each event's moment, and as each fill-in commits. A press goes after the
+    /// edges at its moment, wherever it is among them, so that it sees them (DESIGN.md §10.1).
+    /// Realtime-safe: no allocation, no locks, bounded time.
     void process(const audio_block& block, std::span<const clock_event> events = {}) noexcept;
 
     /// Any single non-audio thread. Queues a command for the start of the next block.
@@ -122,6 +123,10 @@ public:
 private:
     void apply_pending_commands(sample_time block_start) noexcept;
     void apply(const command& request, sample_time block_start) noexcept;
+
+    /// Commits each fill-in due before `until`, and checks the capture at each one.
+    void follow_grid(sample_time until) noexcept;
+
     void report_clock(sample_time block_start, sample_time block_end) noexcept;
 
     spsc_queue<command, command_queue_capacity> commands_;

@@ -32,6 +32,7 @@ namespace {
 using test::at_sample;
 using test::check_holders;
 using test::clocked_engine;
+using test::end_of;
 using test::tape_of;
 
 constexpr sample_rate  rate_48k{48'000U};
@@ -164,7 +165,7 @@ TEST_CASE("an early press waits for its line, holds each page the recorder takes
     // Its line arrives: it takes the slot, provisional.
     rig.run_through(at_sample(line(16)));
 
-    CHECK(audio.loop().slot == slot_state::provisional);
+    REQUIRE(audio.loop().slot == slot_state::provisional);
     CHECK_FALSE(audio.loop().waiting);
     CHECK(audio.slot().lines().back().status == line_status::edge);
     CHECK(audio.slot().pages().size() == 12U);
@@ -298,7 +299,7 @@ TEST_CASE("the end line is the next line at most a quarter beat away, and the la
 
         REQUIRE(audio.loop().waiting);
         CHECK(audio.waiting().first_bar() == 2);
-        CHECK(audio.waiting().lines().back().position == samples{line(6)});
+        CHECK(end_of(audio.waiting()) == line(6));
     }
 
     SUBCASE("a tick further: late, so bar 5's line, held at once and already final")
@@ -313,7 +314,7 @@ TEST_CASE("the end line is the next line at most a quarter beat away, and the la
         CHECK_FALSE(audio.loop().waiting);
         CHECK(audio.loop().slot == slot_state::final);
         CHECK(audio.slot().first_bar() == 1);
-        CHECK(audio.slot().lines().back().position == samples{line(5)});
+        CHECK(end_of(audio.slot()) == line(5));
     }
 
     SUBCASE("on the line, after its pulse: that line, and held at once")
@@ -327,16 +328,15 @@ TEST_CASE("the end line is the next line at most a quarter beat away, and the la
 
         CHECK(audio.loop().slot == slot_state::provisional);
         CHECK(audio.slot().first_bar() == 2);
-        CHECK(audio.slot().lines().back().position == samples{line(6)});
+        CHECK(end_of(audio.slot()) == line(6));
     }
 }
 
 TEST_CASE("a press on a line's pulse finds the same end line whether the pulse comes first or "
           "not")
 {
-    // Pulse first: the line is recorded, and the press is late by nothing. Press first: the grid
-    // predicts the line at that moment, so it is the most recent, and the capture waits the
-    // moment it takes for its pulse.
+    // The engine takes a moment's clock edges before its presses, wherever the presses are among
+    // them (DESIGN.md §10.1): either way the line is recorded, and the press is late by nothing.
     for (const bool pulse_first : {true, false}) {
         CAPTURE(pulse_first);
 
@@ -360,7 +360,7 @@ TEST_CASE("a press on a line's pulse finds the same end line whether the pulse c
 
         CHECK(rig.target().loop().slot == slot_state::provisional);
         CHECK(rig.target().slot().first_bar() == 2);
-        CHECK(rig.target().slot().lines().back().position == samples{line(6)});
+        CHECK(end_of(rig.target().slot()) == line(6));
     }
 }
 
@@ -654,27 +654,40 @@ TEST_CASE("a press sees the fill-ins due before it, even within its block")
     CHECK(rig.target().waiting().lines().front().position == samples{start_line});
 }
 
-TEST_CASE("until presses are checked at their own moments, a press in the block that brings a "
-          "waiting capture's line supersedes it")
+TEST_CASE("a press in the block that brings a waiting capture's line comes after the capture has "
+          "started")
 {
-    // A known limit, which the second capture PR removes (DESIGN.md §3.4): a capture takes the
-    // slot only at the end of the block that brings its line. Bar 6's line starts a block of 480
-    // frames; an early 4-bar press waits for it, and a 1-bar late press comes 100 samples after
-    // it, in the same block. The late press supersedes the waiting capture, whose line had
-    // arrived first.
-    steady_rig      setup;
-    clocked_engine& rig   = setup.rig;
-    const engine&   audio = rig.target();
+    // Bar 6's line starts a block of 480 frames; an early 4-bar press waits for it, and a 1-bar
+    // late press comes 100 samples after it, in the same block. The capture starts at its line
+    // (DESIGN.md §3.4, "Capture under change"), so the late press is admitted beside its loop or
+    // not at all. In 62 pages, the history's 46, the loop's 13 and its own 4 do not fit.
+    for (const std::size_t pages : {p1_pages, std::size_t{62}}) {
+        CAPTURE(pages);
 
-    rig.press(at_sample(line(6) - 4'800), capture_bars::four);
-    rig.press(at_sample(line(6) + 100), capture_bars::one);
-    rig.run_through(at_sample(line(6) + 100));
+        steady_rig      setup{pages};
+        clocked_engine& rig   = setup.rig;
+        const engine&   audio = rig.target();
 
-    CHECK(audio.loop().outcome_serial == 2U);
-    CHECK(audio.slot().bars() == 1U);
-    CHECK(audio.slot().first_bar() == 5);
-    CHECK_FALSE(audio.loop().waiting);
-    check_holders(audio);
+        rig.press(at_sample(line(6) - 4'800), capture_bars::four);
+        rig.press(at_sample(line(6) + 100), capture_bars::one);
+        rig.run_through(at_sample(line(6) + 100));
+
+        CHECK(audio.loop().outcome_serial == 2U);
+        CHECK_FALSE(audio.loop().waiting);
+
+        if (pages == p1_pages) {
+            CHECK(audio.loop().outcome.result == capture_result::committed);
+            CHECK(audio.slot().bars() == 1U);
+            CHECK(audio.slot().first_bar() == 5);
+        }
+        else {
+            CHECK(audio.loop().outcome.result == capture_result::pool_full);
+            CHECK(audio.slot().bars() == 4U);
+            CHECK(audio.slot().first_bar() == 2);
+        }
+
+        check_holders(audio);
+    }
 }
 
 TEST_CASE("a refused press still supersedes a waiting one, and leaves the slot's loop in place")
@@ -813,7 +826,7 @@ TEST_CASE("an end line whose edge comes late is fitted again when it arrives")
         rig.run_through(at_sample(line(3) + (8 * pulse_samples)));
 
         CHECK(audio.loop().slot == slot_state::final);
-        CHECK(audio.slot().lines().back().position == samples{line(3)});
+        CHECK(end_of(audio.slot()) == line(3));
         CHECK(audio.slot().page_count() == 4U);
         check_holders(audio);
     }
@@ -866,12 +879,12 @@ TEST_CASE("while the clock is stopped, a capture cuts on the fill-ins, and waits
 
         CHECK(audio.loop().slot == slot_state::provisional);
         CHECK(audio.slot().first_bar() == 3);
-        CHECK(audio.slot().lines().back().position == samples{line(7)});
+        CHECK(end_of(audio.slot()) == line(7));
 
         setup.rig.run_through(at_sample(line(7) + (8 * pulse_samples) + reserve));
 
         CHECK(audio.loop().slot == slot_state::final);
-        CHECK(audio.slot().lines().back().position == samples{line(7)});
+        CHECK(end_of(audio.slot()) == line(7));
     }
 
     SUBCASE("an early press waits for its line's fill-in to commit")
@@ -892,7 +905,7 @@ TEST_CASE("while the clock is stopped, a capture cuts on the fill-ins, and waits
 
         setup.rig.run_through(at_sample(commits));
         CHECK(audio.loop().slot == slot_state::provisional);
-        CHECK(audio.slot().lines().back().position == samples{line(7)});
+        CHECK(end_of(audio.slot()) == line(7));
     }
 }
 
@@ -1095,8 +1108,9 @@ TEST_CASE("the pre-roll and the read margin are at least 50 ms at any rate")
 // the press. With fewer, a line can still be raw at the press, and capture reserves half a pulse
 // before the start line too (DESIGN.md §3.4).
 
-/// Capture with its own pool, recorder and tracker, run as the engine runs it: each block's pulses,
-/// then the tracker to the block's end, the recording, and capture's follow().
+/// Capture with its own pool, recorder and tracker, run as the engine runs it: each fill-in's
+/// commit and each pulse in time order, with a check at each; then the tracker to the block's end,
+/// the recording, and capture's follow().
 struct capture_rig {
     static constexpr std::size_t block_frames = 480;
 
@@ -1108,8 +1122,10 @@ struct capture_rig {
     clock_tracker             grid;
     capture                   captured;
 
-    std::vector<sample_time> pulses;
+    std::vector<sample_time> pulses;  // in time order, and resets likewise
+    std::vector<sample_time> resets;
     std::size_t              next_pulse{0};
+    std::size_t              next_reset{0};
     std::vector<float>       silence;
 
     explicit capture_rig(const clock_tracker_config& clock, std::int64_t page_frames = 32'768)
@@ -1123,12 +1139,51 @@ struct capture_rig {
     {
     }
 
+    void commit_before(sample_time end)
+    {
+        for (auto due = grid.next_fill_in(); due && *due < end;) {
+            grid.advance(*due);
+            captured.check(*due, grid);
+
+            // Each commit comes after the last, or this would loop for ever.
+            const std::optional<sample_time> next = grid.next_fill_in();
+
+            REQUIRE((!next || *next > *due));
+            due = next;
+        }
+    }
+
+    /// Each pulse and reset before `end`, in time order, a pulse first at the same moment.
     void deliver_before(sample_time end)
     {
-        while (next_pulse < pulses.size() && pulses[next_pulse] < end) {
-            grid.pulse(pulses[next_pulse]);
-            ++next_pulse;
+        for (;;) {
+            const bool pulse_next =
+                next_pulse < pulses.size() && pulses[next_pulse] < end &&
+                (next_reset == resets.size() || pulses[next_pulse] <= resets[next_reset]);
+            const bool reset_next =
+                !pulse_next && next_reset < resets.size() && resets[next_reset] < end;
+
+            if (!pulse_next && !reset_next) {
+                break;
+            }
+
+            const sample_time when = pulse_next ? pulses[next_pulse] : resets[next_reset];
+
+            commit_before(when);
+
+            if (pulse_next) {
+                grid.pulse(when);
+                ++next_pulse;
+            }
+            else {
+                grid.reset(when);
+                ++next_reset;
+            }
+
+            captured.check(when, grid);
         }
+
+        commit_before(end);
     }
 
     void run_until(samples end)
@@ -1142,7 +1197,7 @@ struct capture_rig {
             deliver_before(block_end);
             grid.advance(block_end);
             history.record(std::span{silence}.first(count), std::span{silence}.first(count));
-            captured.follow(grid);
+            captured.follow();
         }
     }
 
@@ -1151,7 +1206,6 @@ struct capture_rig {
     {
         run_until(when.whole_samples());
         deliver_before(when + sample_time::from_ticks(1));
-        grid.advance(when);
         captured.press(when, bars, grid);
     }
 };
@@ -1216,32 +1270,42 @@ TEST_CASE("a capture that waited is fitted again with the reserve from its press
     // One bar of 4 pulses before bar 10's line, pressed 0.8 pulse early: the start line has 3
     // pulses after it, so half a pulse is reserved before it. The end line's pulse comes 600
     // samples late, and the tracker's pulse grows by about 440 samples with it. Fitted again at
-    // the edge, the capture keeps the press's half pulse each side.
+    // the edge, the capture keeps the press's half pulse each side. Numbered by a reset on bar
+    // 2's line before the press, it is the same: its labels have not changed since.
     constexpr std::int64_t short_bar = 4 * pulse_samples;
     constexpr std::int64_t end_line  = 10 * short_bar;
     constexpr std::int64_t start     = end_line - short_bar;
     constexpr std::int64_t late      = 600;
 
-    capture_rig rig{one_beat_bars};
+    for (const bool reset : {false, true}) {
+        CAPTURE(reset);
 
-    for (std::int64_t pulse = 0; pulse < 60; ++pulse) {
-        rig.pulses.push_back(at_sample((pulse * pulse_samples) + (pulse == 40 ? late : 0)));
+        capture_rig rig{one_beat_bars};
+
+        for (std::int64_t pulse = 0; pulse < 60; ++pulse) {
+            rig.pulses.push_back(at_sample((pulse * pulse_samples) + (pulse == 40 ? late : 0)));
+        }
+
+        if (reset) {
+            rig.resets.push_back(at_sample(2 * short_bar));
+        }
+
+        rig.press(at_sample(end_line - 4'800), capture_bars::one);
+
+        REQUIRE(rig.captured.waiting().bars() == 1U);
+        CHECK(rig.captured.waiting().held().first == samples{start - reserve - margin});
+
+        rig.run_until(samples{end_line + late + 1});
+
+        const captured_loop& loop = rig.captured.slot();
+
+        REQUIRE(loop.bars() == 1U);
+        REQUIRE(test::known(rig.grid.pulse_period()) > at_sample(pulse_samples + 400));
+        CHECK(loop.first_bar() == (reset ? 7 : 9));
+        CHECK(loop.lines()[0].status == line_status::edge);
+        CHECK(loop.held().first == samples{start - reserve - margin});
+        CHECK(loop.held().end == samples{end_line + late + reserve + margin});
     }
-
-    rig.press(at_sample(end_line - 4'800), capture_bars::one);
-
-    REQUIRE(rig.captured.waiting().bars() == 1U);
-    CHECK(rig.captured.waiting().held().first == samples{start - reserve - margin});
-
-    rig.run_until(samples{end_line + late + 1});
-
-    const captured_loop& loop = rig.captured.slot();
-
-    REQUIRE(loop.bars() == 1U);
-    REQUIRE(test::known(rig.grid.pulse_period()) > at_sample(pulse_samples + 400));
-    CHECK(loop.lines()[0].status == line_status::edge);
-    CHECK(loop.held().first == samples{start - reserve - margin});
-    CHECK(loop.held().end == samples{end_line + late + reserve + margin});
 }
 
 TEST_CASE("a line before the end line whose pulse has not arrived cannot be held")
@@ -1320,6 +1384,96 @@ TEST_CASE("an estimate that would move the start line before what the loop holds
     CHECK(loop.lines()[0].status == line_status::final);
     CHECK(loop.lines()[0].position == samples{start + late});
     CHECK(loop.held().first == samples{start + late - reserve - margin});
+}
+
+TEST_CASE("a capture planned again has only the frames still there: the history now, and its "
+          "own pages")
+{
+    // Pages of 8,192 frames, so 46 are 7.8 s, and one-beat bars of 4 pulses of 11,446 samples:
+    // 8 bars fit 46 pages with 37 frames to spare. The clock starts at 734, so bar 9's line is at
+    // 412,790 and the pulse before it at 401,344, 64 frames before page 49 starts.
+    //
+    // An 8-bar capture pressed 1 ms after that pulse waits for bar 9's line. Its pre-roll starts at
+    // 44,118, in page 5, inside the history at its press, which starts at page 3. A reset for the
+    // pulse 1 ms later makes it bar 0, and the capture is planned again as a late press: 8 bars
+    // would start a pulse earlier, at 32,672, in page 3. Page 49 has started since the press, so
+    // the history starts at page 4 now, and the capture's own pages at page 5: page 3 is gone,
+    // and the capture is shortened to 4 bars.
+    constexpr std::int64_t page_frames = 8'192;
+    constexpr std::int64_t pulse       = 11'446;
+    constexpr std::int64_t origin      = 734;
+    constexpr std::int64_t before      = origin + (35 * pulse);  // the pulse before bar 9's line
+
+    static_assert(before + 64 == 49 * page_frames);
+
+    capture_rig rig{one_beat_bars, page_frames};
+
+    for (std::int64_t i = 0; i < 48; ++i) {
+        rig.pulses.push_back(at_sample(origin + (i * pulse)));
+    }
+
+    rig.resets.push_back(at_sample(before + 96));
+    rig.press(at_sample(before + 48), capture_bars::eight);
+
+    REQUIRE(rig.captured.report().outcome.result == capture_result::committed);
+    REQUIRE(rig.captured.waiting().first_page() == 5);
+
+    rig.run_until(samples{before + 480});
+
+    const capture_outcome& outcome = rig.captured.report().outcome;
+
+    CHECK(outcome.result == capture_result::shortened);
+    CHECK(outcome.kept == capture_bars::four);
+    CHECK(outcome.limit == capture_limit::history);
+    CHECK(rig.captured.report().outcome_serial == 2U);
+    REQUIRE_FALSE(rig.captured.slot().empty());
+    CHECK(rig.captured.slot().lines().back().position == samples{before});
+    CHECK(rig.captured.slot().first_bar() == -4);
+}
+
+TEST_CASE("a capture planned again keeps the frames of its own pages, though the history has "
+          "moved past them")
+{
+    // Pages of 16,384 frames, and one-beat bars of 4 pulses of 23,000 samples. The clock starts
+    // at 7,640, so bar 9's line is at 835,640, 56 frames after page 51 starts.
+    //
+    // An 8-bar capture pressed 5,000 samples before that line waits for it. Its pre-roll starts at
+    // 97,240, in page 5, the oldest of the history at its press. A reset 1 ms before the line
+    // makes it bar 0, and the capture is planned again, with the same window. Page 51 has started
+    // since the press, so page 5 has left the history; but the capture holds it, and keeps its
+    // 8 bars.
+    constexpr std::int64_t page_frames = 16'384;
+    constexpr std::int64_t pulse       = 23'000;
+    constexpr std::int64_t origin      = 7'640;
+    constexpr std::int64_t line_9      = origin + (36 * pulse);
+
+    static_assert(line_9 == (51 * page_frames) + 56);
+
+    capture_rig rig{one_beat_bars, page_frames};
+
+    for (std::int64_t i = 0; i < 45; ++i) {
+        rig.pulses.push_back(at_sample(origin + (i * pulse)));
+    }
+
+    rig.resets.push_back(at_sample(line_9 - 48));
+    rig.press(at_sample(line_9 - 5'000), capture_bars::eight);
+
+    REQUIRE(rig.captured.report().outcome.result == capture_result::committed);
+    REQUIRE(rig.captured.waiting().first_page() == 5);
+    REQUIRE(rig.captured.waiting().first_bar() == 1);
+
+    rig.run_until(samples{line_9 - 47});
+
+    REQUIRE(rig.captured.report().waiting);
+    CHECK(rig.captured.report().outcome.result == capture_result::committed);
+    CHECK(rig.captured.report().outcome_serial == 1U);
+    CHECK(rig.captured.waiting().first_bar() == -8);
+    CHECK(rig.captured.waiting().first_page() == 5);
+
+    rig.run_until(samples{line_9 + 480});
+
+    REQUIRE(rig.captured.slot().bars() == 8U);
+    CHECK(rig.captured.slot().lines().back().position == samples{line_9});
 }
 
 TEST_CASE("a capture spanning exactly 46 pages fits, and one a sample longer does not")
