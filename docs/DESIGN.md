@@ -246,7 +246,7 @@ build links with, so the budget follows the layout.
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
-| With the estimate reading edges in place (PR #20) | 72% (94,764 bytes) | 848 bytes more, for 1,880 bytes less stack: it reads the tracker's edges twice rather than copying them once |
+| With the estimate reading edges in place (PR #21) | 72% (94,764 bytes) | 848 bytes more, for 1,880 bytes less stack: it reads the tracker's edges twice rather than copying them once |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -308,7 +308,7 @@ padding included, plus `.dtcmram_bss`.
   frames), the engine's `process()` (inlined into the firmware's callback), and capture's
   `press()` (848 bytes) calling the bar-line estimate (1,256 bytes).
   - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
-    sorts its lists in place for their medians (PR #20). Copying the edges and sorting copies, it
+    sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
     took 3,136 bytes, and the chain about 5.3 KB.
   - Before capture the deepest chain was `report_clock()`'s, about 2.1 KB in all.
 
@@ -767,7 +767,7 @@ The other notes:
       a cell, by up to 159.5 samples (31, 11 and 159);
     - with 10 usable values and no minimum, no line came out worse (1 in 50,000), so a
       deterministic test pins the minimum instead: 15 values keep the edge, and 16 repair it.
-- **Decided: *c_within* counts fill-ins** (PR #20). Until then it skipped them, carried over from
+- **Decided: *c_within* counts fill-ins** (PR #21). Until then it skipped them, carried over from
   *σ̂*, where it matters (step 1), without a measurement of its own. Measured over 130,560 ramps
   with 1 to 8 fill-ins before the line or at the end of the side after it: ramps of ±5%, ±20% and
   ±50% over 2, 4 and 8 bars, linear and exponential, starting 0 to 32 pulses before the line;
@@ -1202,7 +1202,7 @@ them and never past valid data.
   shortened, or refused, just after power-up too (§3.4). So the seam never shortens for want of
   audio before the start, and the seam, the correlation windows and the bar-locked moves all read
   50 ms that exist.
-  - Decided over shortening the seam (PR #20): the cost is only a window that starts within 50 ms
+  - Decided over shortening the seam (PR #21): the cost is only a window that starts within 50 ms
     of power-up, and one guarantee for every loop is simpler to build on than a special case.
   - Pinned by a test: a window whose pre-roll starts at the history's first frame fits, and one
     a sample earlier does not.
