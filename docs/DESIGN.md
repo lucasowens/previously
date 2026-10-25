@@ -263,9 +263,10 @@ GCC's default, `-O0`. The rows above PR #18's include this.
   the engine, so its contracts stay on. The engine is not position-independent in the firmware,
   which saves 112 bytes; Rack's shared library still needs it.
 - **T0 checks it.** After every release link, the build reads its own `compile_commands.json` and
-  fails unless every engine source is compiled with `-O3` as its last `-O` option, `-flto` and
-  `-ffp-contract=off`, and without NDEBUG (`cmake/check_firmware_engine_flags.cmake`). A host test
-  runs the check against fixtures.
+  fails unless every engine source ends up at `-O3`, with LTO and `-ffp-contract=off`, and with
+  NDEBUG undefined (`cmake/check_firmware_engine_flags.cmake`). As for the compiler, each option's
+  last setting decides: a later `-fno-lto` or `-ffp-contract=fast` fails it. A host test runs the
+  check against fixtures.
 - **Flash** fell from 115,660 bytes to 79,152. A scratch build had estimated 79,340.
 - **RAM** fell by 2,456 bytes. Unoptimized, GCC 15 turns on libstdc++'s own assertions: bounds
   checks in `std::span`, `std::array` and `std::optional`, which report through newlib's stdio.

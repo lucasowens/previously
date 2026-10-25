@@ -41,6 +41,22 @@ write_fixture(contracted "${clock}" "${contracted}")
 entry(ndebug "${engine}/recorder.cpp" "${good} -DNDEBUG")
 write_fixture(ndebug "${clock}" "${ndebug}")
 
+# Each option's last setting wins, as it does for the compiler.
+entry(lto_undone "${engine}/recorder.cpp" "${good} -fno-lto")
+write_fixture(lto_undone "${clock}" "${lto_undone}")
+
+entry(lto_again "${engine}/recorder.cpp" "-ffp-contract=off -O3 -fno-lto -flto")
+write_fixture(lto_again "${clock}" "${lto_again}")
+
+entry(contract_fast "${engine}/recorder.cpp" "${good} -ffp-contract=fast")
+write_fixture(contract_fast "${clock}" "${contract_fast}")
+
+entry(contract_on "${engine}/recorder.cpp" "${good} -ffp-contract=on")
+write_fixture(contract_on "${clock}" "${contract_on}")
+
+entry(ndebug_undone "${engine}/recorder.cpp" "${good} -DNDEBUG -UNDEBUG")
+write_fixture(ndebug_undone "${clock}" "${ndebug_undone}")
+
 # The engine's sources found through a path that is not normalized, as the firmware's root is.
 entry(unnormalized "/repo/firmware/../engine/src/recorder.cpp" "-ffp-contract=off -O3")
 write_fixture(unnormalized "${clock}" "${unnormalized}")
@@ -73,14 +89,21 @@ endfunction()
 
 expect("the engine at the release level passes, and main.cpp is not checked" built TRUE
        "firmware engine: 2 sources at -O3 with -flto")
-expect("without -flto fails" no_lto FALSE "recorder.cpp is compiled without -flto")
+expect("without -flto fails" no_lto FALSE "recorder.cpp is compiled without LTO")
 expect("a later -O wins, and fails" overridden FALSE "recorder.cpp is compiled at '-O0', not -O3")
 expect("no -O at all fails" unoptimized FALSE "recorder.cpp is compiled at '', not -O3")
 expect("without -ffp-contract=off fails" contracted FALSE
-       "recorder.cpp is compiled without -ffp-contract=off")
+       "recorder.cpp's last -ffp-contract is '', not off")
 expect("NDEBUG fails" ndebug FALSE "recorder.cpp is compiled with NDEBUG")
+expect("a later -fno-lto fails" lto_undone FALSE "recorder.cpp is compiled without LTO")
+expect("a later -flto passes" lto_again TRUE "firmware engine: 2 sources at -O3 with -flto")
+expect("a later -ffp-contract=fast fails" contract_fast FALSE
+       "recorder.cpp's last -ffp-contract is 'fast', not off")
+expect("a later -ffp-contract=on fails" contract_on FALSE
+       "recorder.cpp's last -ffp-contract is 'on', not off")
+expect("a later -UNDEBUG passes" ndebug_undone TRUE "firmware engine: 2 sources at -O3 with -flto")
 expect("an engine source on a path not normalized is checked too" unnormalized FALSE
-       "recorder.cpp is compiled without -flto")
+       "recorder.cpp is compiled without LTO")
 expect("commands without the engine fail" no_engine FALSE "compiles no source in")
 expect("no commands at all fail" empty FALSE "compiles no source in")
 expect("unreadable commands fail" unreadable FALSE "could not read")

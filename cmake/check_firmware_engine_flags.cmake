@@ -1,11 +1,14 @@
 # Firmware engine flags (tier T0). Fails the build unless the engine is compiled for the firmware as
 # libDaisy compiles the firmware's own sources (issue #11). Every engine source's compile command
-# must have:
+# must end up with:
 #
-#   - the release optimization (OPT_LEVEL) as its last -O option, since a later one would win;
-#   - -flto, so the engine is optimized across files with the rest of the image;
+#   - the release optimization (OPT_LEVEL);
+#   - LTO, so the engine is optimized across files with the rest of the image;
 #   - -ffp-contract=off, the floating point every target shares (ADR 0005);
-#   - no NDEBUG, so the engine's contracts stay on in the firmware.
+#   - NDEBUG undefined, so the engine's contracts stay on in the firmware.
+#
+# The compiler takes each option's last setting, so the check does too: a later -O, -fno-lto,
+# -ffp-contract or -UNDEBUG overrides an earlier one.
 #
 # The commands come from the compile_commands.json the build writes, so they are the commands the
 # build runs, with every option from the toolchain, the directory and the target.
@@ -46,20 +49,24 @@ if(entries GREATER 0)
         string(JSON command GET "${commands}" ${index} command)
         separate_arguments(arguments UNIX_COMMAND "${command}")
 
-        set(level    "")
-        set(lto      OFF)
-        set(contract OFF)
-        set(ndebug   OFF)
+        set(level       "")
+        set(lto         OFF)
+        set(contraction "")
+        set(ndebug      OFF)
 
         foreach(argument IN LISTS arguments)
             if(argument MATCHES "^-O")
                 set(level "${argument}")
             elseif(argument MATCHES "^-flto(=.*)?$")
                 set(lto ON)
-            elseif(argument STREQUAL "-ffp-contract=off")
-                set(contract ON)
+            elseif(argument STREQUAL "-fno-lto")
+                set(lto OFF)
+            elseif(argument MATCHES "^-ffp-contract=(.*)$")
+                set(contraction "${CMAKE_MATCH_1}")
             elseif(argument MATCHES "^-DNDEBUG(=.*)?$")
                 set(ndebug ON)
+            elseif(argument STREQUAL "-UNDEBUG")
+                set(ndebug OFF)
             endif()
         endforeach()
 
@@ -70,11 +77,11 @@ if(entries GREATER 0)
         endif()
 
         if(NOT lto)
-            list(APPEND failures "${source} is compiled without -flto")
+            list(APPEND failures "${source} is compiled without LTO")
         endif()
 
-        if(NOT contract)
-            list(APPEND failures "${source} is compiled without -ffp-contract=off")
+        if(NOT contraction STREQUAL "off")
+            list(APPEND failures "${source}'s last -ffp-contract is '${contraction}', not off")
         endif()
 
         if(ndebug)
