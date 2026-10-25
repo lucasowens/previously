@@ -943,7 +943,10 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
   - `outcome_serial`, which changes with each outcome, including one changed when an edge
     arrives.
 - **Until the second PR:**
-  - a capture's state changes at the end of the block in which the change became known;
+  - a capture's state changes at the end of the block in which the change became known. So a
+    press later in the block that brings a waiting capture's line supersedes that capture, though
+    its line came first: within a block of the line, 32 frames in Rack (0.7 ms at 48 kHz) and
+    up to 64 ms at the engine's largest blocks, 3,072 frames;
   - a reset keeps a held capture's pulses and its bar numbers, and a capture still waiting is
     not planned again: it keeps its end line's pulse.
 - **Host only.** Rack's CAPTURE button and BARS control come after playback.
@@ -963,6 +966,8 @@ final                          8 pulses later. Line 16 + 50 ms ends in page 46, 
     line at either end past what is held;
   - a loop final before its read margin is recorded, after its press and at it, holding the
     margin's pages as they come;
+  - a press in the block that brings a waiting capture's line superseding it, until the second
+    PR;
   - no allocation.
 
   The second PR adds the reset race and 4.5×/4.51×. Playback takes the lead-time cases and the

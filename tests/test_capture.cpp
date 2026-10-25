@@ -654,6 +654,29 @@ TEST_CASE("a press sees the fill-ins due before it, even within its block")
     CHECK(rig.target().waiting().lines().front().position == samples{start_line});
 }
 
+TEST_CASE("until presses are checked at their own moments, a press in the block that brings a "
+          "waiting capture's line supersedes it")
+{
+    // A known limit, which the second capture PR removes (DESIGN.md §3.4): a capture takes the
+    // slot only at the end of the block that brings its line. Bar 6's line starts a block of 480
+    // frames; an early 4-bar press waits for it, and a 1-bar late press comes 100 samples after
+    // it, in the same block. The late press supersedes the waiting capture, whose line had
+    // arrived first.
+    steady_rig      setup;
+    clocked_engine& rig   = setup.rig;
+    const engine&   audio = rig.target();
+
+    rig.press(at_sample(line(6) - 4'800), capture_bars::four);
+    rig.press(at_sample(line(6) + 100), capture_bars::one);
+    rig.run_through(at_sample(line(6) + 100));
+
+    CHECK(audio.loop().outcome_serial == 2U);
+    CHECK(audio.slot().bars() == 1U);
+    CHECK(audio.slot().first_bar() == 5);
+    CHECK_FALSE(audio.loop().waiting);
+    check_holders(audio);
+}
+
 TEST_CASE("a refused press still supersedes a waiting one, and leaves the slot's loop in place")
 {
     // 46 + 13 + 5: a 4-bar loop and a 1-bar capture waiting fit, and a second 4-bar one does not.

@@ -130,8 +130,9 @@ however the binary is run.
     full-length loop cannot be replaced, and 52 at 705.6 and 768 kHz, where loops get 6 pages
     and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
     at: 184 MiB at 768 kHz. A rate change starts the history again
-  - Until capture's second PR: a capture's state changes at block ends, and a reset keeps a
-    held or waiting capture's pulses rather than planning a waiting one again
+  - Until capture's second PR: a capture's state changes at block ends, so a press in the block
+    that brings a waiting capture's line supersedes it; and a reset keeps a held or waiting
+    capture's pulses rather than planning a waiting one again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
   grew. The stack reserve is about 3 times the deepest chain, capture's press through the
