@@ -1032,6 +1032,112 @@ TEST_CASE("a filled-in pulse is marked, and kept at the slot it was filled in at
     }
 }
 
+TEST_CASE("the next fill-in is due as the clock reads as stopped, and then as each slot closes")
+{
+    const auto        truth    = steady_clock(0.0, gate_period, 100);
+    const sample_time one_tick = sample_time::from_ticks(1);
+
+    tracked_clock clock{clock_tracker_config::gate(rate_48k)};
+
+    CHECK_FALSE(clock.tracker.next_fill_in().has_value());
+
+    feed(clock.tracker, std::span{truth}.first(1));
+    CHECK_FALSE(clock.tracker.next_fill_in().has_value());  // acquiring: no tempo yet
+
+    feed(clock.tracker, std::span{truth}.subspan(1));
+
+    // Locked: due as 2.5 periods have passed since the last pulse, and a tick more, when slots
+    // 100 and 101 have both closed and are filled in together.
+    const sample_time stops = at(truth[99] + (gate_period * 2.5)) + one_tick;
+
+    REQUIRE(clock.tracker.next_fill_in() == stops);
+
+    clock.tracker.advance(stops - one_tick);
+    CHECK(clock.tracker.latest_pulse() == 99);
+
+    clock.tracker.advance(stops);
+    CHECK(clock.tracker.latest_pulse() == 101);
+
+    // Freewheeling: due as slot 102 closes, half a period after it.
+    const sample_time closes = at(truth[99] + (gate_period * 3.5));
+
+    REQUIRE(clock.tracker.next_fill_in() == closes);
+
+    clock.tracker.advance(closes - one_tick);
+    CHECK(clock.tracker.latest_pulse() == 101);
+
+    clock.tracker.advance(closes);
+    CHECK(clock.tracker.latest_pulse() == 102);
+    CHECK(clock.tracker.next_fill_in() == closes + at(gate_period));
+
+    // A returning pulse locks again, and the next fill-in is due 2.5 periods after it.
+    const double returning = truth[99] + (gate_period * 3.8);
+
+    clock.tracker.pulse(at(returning));
+    CHECK(clock.tracker.next_fill_in() == at(returning + (gate_period * 2.5)) + one_tick);
+}
+
+TEST_CASE("advancing to the next fill-in records one, and a tick short of it records none")
+{
+    // Whatever the clock did before it stopped: steady, a late or early hiccup pending, just
+    // returned from a stop, or the MIDI preset.
+    struct before_the_stop {
+        const char*          name{""};
+        clock_tracker_config config;
+        std::vector<double>  pulses;
+    };
+
+    std::vector<double> late    = steady_clock(0.0, gate_period, 40);
+    std::vector<double> early   = late;
+    std::vector<double> stopped = late;
+
+    late.push_back(late.back() + (gate_period * 1.4));
+    early.push_back(early.back() + (gate_period * 0.6));
+    stopped.push_back(stopped.back() + (gate_period * 4.3));
+
+    const clock_tracker_config gate = clock_tracker_config::gate(rate_48k);
+
+    const std::array<before_the_stop, 5> cases{
+        before_the_stop{
+            .name   = "steady",
+            .config = gate,
+            .pulses = steady_clock(0.0, gate_period, 40),
+        },
+        before_the_stop{.name = "a late hiccup", .config = gate, .pulses = late},
+        before_the_stop{.name = "an early hiccup", .config = gate, .pulses = early},
+        before_the_stop{.name = "just returned", .config = gate, .pulses = stopped},
+        before_the_stop{
+            .name   = "MIDI",
+            .config = clock_tracker_config::midi(rate_48k),
+            .pulses = steady_clock(0.0, midi_period, 200),
+        },
+    };
+
+    const sample_time one_tick = sample_time::from_ticks(1);
+
+    for (const before_the_stop& clock_case : cases) {
+        CAPTURE(clock_case.name);
+
+        tracked_clock clock{clock_case.config};
+        feed(clock.tracker, clock_case.pulses);
+
+        // Twenty fill-ins, the first moment included.
+        for (int fill_in = 0; fill_in < 20; ++fill_in) {
+            CAPTURE(fill_in);
+
+            const sample_time  due    = known(clock.tracker.next_fill_in());
+            const std::int64_t latest = known(clock.tracker.latest_pulse());
+
+            clock.tracker.advance(due - one_tick);
+            CHECK(clock.tracker.latest_pulse() == latest);
+
+            clock.tracker.advance(due);
+            CHECK(known(clock.tracker.latest_pulse()) > latest);
+            CHECK(known(clock.tracker.next_fill_in()) > due);
+        }
+    }
+}
+
 TEST_CASE("fill-ins retired from a slowed clock give way to its real edges")
 {
     // The clock slows to a third of its tempo. The first slow pulse comes after a gap long enough
@@ -1044,6 +1150,7 @@ TEST_CASE("fill-ins retired from a slowed clock give way to its real edges")
 
     tracked_clock clock{clock_tracker_config::gate(rate_48k)};
     feed(clock.tracker, std::span{truth}.first(101));
+    CHECK(clock.tracker.retirements() == 0U);
 
     // Before the retirement: two fill-ins, then the first slow pulse.
     CHECK(known(clock.tracker.edge(100)).filled_in);
@@ -1056,6 +1163,7 @@ TEST_CASE("fill-ins retired from a slowed clock give way to its real edges")
     // At it: the two real pulses take indices 100 and 101. What was stored after them is no
     // longer recorded, so it cannot be read.
     REQUIRE(clock.tracker.latest_pulse() == 101);
+    CHECK(clock.tracker.retirements() == 1U);
     CHECK_FALSE(clock.tracker.edge(102).has_value());
 
     // After it, every pulse is real, including those stored where fill-ins used to be.
@@ -1144,6 +1252,7 @@ TEST_CASE("a slowdown whose fill-ins overwrote the pulse before them reads as a 
         tracker.pulse(at(gate_period * (99.0 + 34.0)));
 
         CHECK(tracker.latest_pulse() == 101);
+        CHECK(tracker.retirements() == 1U);
         CHECK(std::abs(error_in_samples(known(tracker.pulse_period()), gate_period * 17.0)) < 0.01);
 
         // Only the two slow pulses are left: the fill-ins overwrote everything before them.
@@ -1162,6 +1271,7 @@ TEST_CASE("a slowdown whose fill-ins overwrote the pulse before them reads as a 
         tracker.pulse(at(gate_period * (99.0 + 35.0)));
 
         CHECK(tracker.latest_pulse() == 99 + 35);
+        CHECK(tracker.retirements() == 0U);
         CHECK(tracker.state() == clock_state::locked);
         CHECK(tracker.pulse_period() == at(gate_period));
         CHECK(known(tracker.edge(133)).filled_in);

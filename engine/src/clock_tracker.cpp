@@ -206,6 +206,24 @@ void clock_tracker::advance(sample_time now) noexcept
     }
 }
 
+std::optional<sample_time> clock_tracker::next_fill_in() const noexcept
+{
+    const sample_time slot_closes = predicted_ + (period_ / slot_window_divisor);
+
+    if (state_ == clock_state::freewheeling) {
+        return slot_closes;
+    }
+
+    // advance() reads a locked clock as stopped strictly after stopped_after() has passed, and
+    // then fills in every slot closed by that moment.
+    if (state_ == clock_state::locked && latest_raw_) {
+        return std::max(*latest_raw_ + stopped_after(period_) + sample_time::from_ticks(1),
+                        slot_closes);
+    }
+
+    return std::nullopt;
+}
+
 clock_state clock_tracker::state() const noexcept
 {
     return state_;
@@ -458,6 +476,7 @@ void clock_tracker::return_from_freewheel(sample_time when, sample_time previous
     const bool slots_kept = previous_raw_sequence_ + 1 >= oldest_sequence();
 
     if (clock_slowed && previous_raw_sequence_ >= 0 && slots_kept) {
+        ++retirements_;
         latest_sequence_ = previous_raw_sequence_;
         record(previous_raw);
         latest_raw_sequence_ = latest_sequence_;
@@ -601,6 +620,11 @@ std::int64_t clock_tracker::effective_offset() const noexcept
 std::uint32_t clock_tracker::resets_applied() const noexcept
 {
     return resets_applied_;
+}
+
+std::uint32_t clock_tracker::retirements() const noexcept
+{
+    return retirements_;
 }
 
 bool clock_tracker::numbered_by_reset() const noexcept

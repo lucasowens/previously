@@ -68,11 +68,11 @@ previously_apply_embedded_subset(${FIRMWARE_NAME})
 # image loads into SRAM (STM32H750IB_sram.lds).
 #
 # RAM: the variables may take 112 KiB, DTCM's 128 KiB less 16 KiB for the stack. The reserve is
-# about 4.8 times the measured need. GCC's -fstack-usage report from LTO, summed along the deepest
-# call chains, gives about 3.4 KB once audio runs and about 1.1 KB at start-up. The 3.4 KB is
+# about 4.5 times the measured need. GCC's -fstack-usage report from LTO, summed along the deepest
+# call chains, gives about 3.7 KB once audio runs and about 1.1 KB at start-up. The 3.7 KB is
 # main()'s frame plus the audio interrupt: the FPU's exception frame, the DMA handler, libDaisy's
 # callback with its two arrays of a block's samples, the engine's process(), and capture's press()
-# calling the bar-line estimate, 1.2 KB of it.
+# checking first and planning a waiting capture again through the bar-line estimate, 1.2 KB of it.
 set(ram_budget_bytes 114688)  # 112 KiB
 
 add_custom_command(TARGET ${FIRMWARE_NAME} POST_BUILD

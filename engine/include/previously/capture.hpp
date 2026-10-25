@@ -30,9 +30,12 @@
 // A new press supersedes a capture still waiting for its line, whatever becomes of the new press.
 // A press whose capture takes the slot replaces the loop there, final or not.
 //
-// For now a capture's state changes at the end of the block in which the change became known,
-// and a capture keeps its lines' pulses when a reset relabels the grid (DESIGN.md §3.4 lists what
-// changes when presses are checked at the exact moments their state can change).
+// A capture's state changes only when the grid learns something: at a clock edge, and as a
+// fill-in commits. The engine checks the capture at each of those moments, in time order, so a
+// capture comes out the same at any block size (DESIGN.md §3.4, "Capture under change"). When the
+// labels change, by a reset or by a slowed clock's fill-ins being retired, a capture still waiting
+// for its line is planned again, as though pressed again at its own moment. A loop in the slot
+// keeps its pulses and its numbering; a line of it whose pulse was retired keeps its edge.
 
 #pragma once
 
@@ -73,6 +76,9 @@ struct capture_outcome {
     capture_bars   asked{capture_bars::one};
     capture_bars   kept{capture_bars::one};  // the bars held, when committed or shortened
     capture_limit  limit{capture_limit::none};
+
+    [[nodiscard]] friend constexpr bool operator==(const capture_outcome&,
+                                                   const capture_outcome&) noexcept = default;
 };
 
 /// The loop in the slot.
@@ -99,14 +105,21 @@ public:
             sample_rate     rate,
             sample_time     input_latency) noexcept;
 
-    /// A press at `when`, asking for `bars`, planned from `grid` as it stands at that moment.
-    /// Audio thread. Bounded time, no allocation.
+    /// A press at `when`, asking for `bars`, planned from `grid` as it stands at that moment. It
+    /// first checks, as check() does, so it sees everything the grid knows. Audio thread. Bounded
+    /// time, no allocation.
     void press(sample_time when, capture_bars bars, const clock_tracker& grid) noexcept;
 
-    /// After each block, once it is recorded: holds the pages the recorder has taken, starts a
-    /// capture whose end line has arrived, and settles lines that are final. Audio thread.
-    /// Bounded time, no allocation.
-    void follow(const clock_tracker& grid) noexcept;
+    /// At `now`, a moment the capture's state can change: after the clock edges at that moment, or
+    /// as a fill-in commits, with `grid` as it stands then. Keeps the edges of the slot's lines
+    /// whose pulses were retired, plans a waiting capture again if the labels changed, starts it
+    /// if its end line has arrived, and settles lines that are final. Audio thread. Bounded time,
+    /// no allocation.
+    void check(sample_time now, const clock_tracker& grid) noexcept;
+
+    /// After each block, once it is recorded: holds the pages the recorder has taken. Audio
+    /// thread. Bounded time, no allocation.
+    void follow() noexcept;
 
     [[nodiscard]] const loop_report& report() const noexcept;
 
@@ -139,8 +152,27 @@ private:
         capture_limit              limit{capture_limit::none};  // what kept out more bars, or all
     };
 
+    /// The labels the grid gives its pulses: which pulse is bar 0's, and how many retirements have
+    /// rewound the sequences. Whether a reset set them changes only with bar 0's pulse: no capture
+    /// is planned before a second pulse gives a tempo, so the first reset moves bar 0 off the
+    /// clock's first pulse.
+    struct labelling {
+        std::int64_t  bar_zero{0};
+        std::uint32_t retirements{0};
+
+        [[nodiscard]] friend constexpr bool operator==(const labelling&,
+                                                       const labelling&) noexcept = default;
+    };
+
+    [[nodiscard]] static labelling labels_of(const clock_tracker& grid) noexcept;
+
     [[nodiscard]] static std::optional<line_fix> locate(const clock_tracker& grid,
                                                         std::int64_t         sequence) noexcept;
+
+    [[nodiscard]] capture_outcome plan(sample_time          when,
+                                       capture_bars         bars,
+                                       samples              history_begin,
+                                       const clock_tracker& grid) noexcept;
 
     [[nodiscard]] fitting fit(const line_fixes& fixes,
                               capture_bars      most,
@@ -157,8 +189,11 @@ private:
     [[nodiscard]] bool    fits_the_pool(tape_range range) const noexcept;
     [[nodiscard]] samples position_of(sample_time time) const noexcept;
 
+    void plan_again(sample_time now, const clock_tracker& grid) noexcept;
     void arrive(const clock_tracker& grid) noexcept;
+    void keep_retired(captured_loop& loop, const clock_tracker& grid) noexcept;
     void settle(captured_loop& loop, const clock_tracker& grid) noexcept;
+    void finish(captured_loop& loop) noexcept;
     void take(captured_loop&     loop,
               const window_plan& window,
               std::int64_t       end_bar,
@@ -179,14 +214,17 @@ private:
     std::array<captured_loop, 2> loops_;
     std::size_t                  slot_index_{0};
 
-    // The waiting capture's press, to fit it again when its end line arrives: what it asked for
-    // and what it holds, the history then, its end line's bar, and half a pulse at the press, its
-    // reserve.
+    // The waiting capture's press, to plan it again when the labels change and to fit it again
+    // when its end line arrives: its moment and what it asked for; and as planned, what it holds,
+    // the history it was planned from, its end line's bar, half a pulse then (its reserve), and
+    // the labels it was planned under.
+    sample_time  waiting_pressed_;
     capture_bars waiting_asked_{capture_bars::one};
     capture_bars waiting_kept_{capture_bars::one};
     samples      waiting_history_begin_{0};
     std::int64_t waiting_end_bar_{0};
     sample_time  waiting_reserve_;
+    labelling    waiting_labels_;
 
     loop_report report_;
 };

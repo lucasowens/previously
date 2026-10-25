@@ -12,8 +12,8 @@
 // it (catch_up()), before anything could give it back: the newest page leaves the history only
 // once 46 more have started.
 //
-// A run loses pages only from its start, and its end may move either way. So the pages held are
-// always the run's first pages, in order.
+// A run's ends may move either way, but it grows at its start only from pages still in the
+// history. So the pages held are always the run's first pages, in order.
 
 #pragma once
 
@@ -114,8 +114,8 @@ public:
     void set_line(std::size_t index, const loop_line& line) noexcept;
 
     /// Holds the pages under `range`, of at most max_pages, and gives back those outside it. Pages
-    /// the recorder has taken are held now, and the rest by catch_up(). The run may not start
-    /// before its held pages do: they are all that is left of the audio there.
+    /// the recorder has taken are held now, and the rest by catch_up(). The run may start before
+    /// its held pages only while the history still has the pages there.
     void hold(tape_range range, const recorder& history) noexcept;
 
     /// Holds the run's pages the recorder has taken since. Call after each block. Bounded: at most

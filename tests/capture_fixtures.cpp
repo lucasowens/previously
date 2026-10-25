@@ -5,12 +5,17 @@
 
 #include "previously/audio_block.hpp"
 #include "previously/captured_loop.hpp"
+#include "previously/clock_tracker.hpp"
+
+#include "planted_clock.hpp"
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <optional>
+#include <sstream>
 #include <utility>
 
 namespace previously::test {
@@ -122,6 +127,15 @@ void clocked_engine::add(const timed_event& event)
     events_.insert(later, event);
 }
 
+std::optional<std::int64_t> end_of(const captured_loop& loop)
+{
+    if (loop.empty()) {
+        return std::nullopt;
+    }
+
+    return loop.lines().back().position.value();
+}
+
 void check_holders(const engine& audio_engine)
 {
     const page_pool&   pool        = audio_engine.pages();
@@ -168,6 +182,312 @@ void check_holders(const engine& audio_engine)
         }
 
         CHECK(loop->pages().size() == taken);
+    }
+}
+
+namespace {
+
+void describe_loop(std::ostringstream& text, const char* name, const captured_loop& loop)
+{
+    text << name << ": " << loop.bars() << " bars from bar " << loop.first_bar()
+         << (loop.numbered_by_reset() ? " by a reset" : "") << ", lines";
+
+    for (const loop_line& each : loop.lines()) {
+        text << " [" << each.sequence << " " << each.time.ticks() << " " << each.position.value()
+             << " " << static_cast<int>(each.status) << "]";
+    }
+
+    text << ", holding " << loop.held().first.value() << " to " << loop.held().end.value()
+         << " in pages " << loop.first_page() << " + " << loop.page_count() << ", "
+         << loop.pages().size() << " held\n";
+}
+
+[[nodiscard]] sample_time at_time(double samples_in)
+{
+    return sample_time::from_ticks(
+        std::llround(samples_in * static_cast<double>(sample_time::ticks_per_sample)));
+}
+
+}  // namespace
+
+std::string describe_capture(const engine& audio_engine)
+{
+    const loop_report& report = audio_engine.loop();
+
+    std::ostringstream text;
+
+    text << "slot " << static_cast<int>(report.slot) << (report.waiting ? ", waiting" : "")
+         << ", outcome " << static_cast<int>(report.outcome.result) << " of "
+         << bar_count(report.outcome.asked) << " keeping " << bar_count(report.outcome.kept)
+         << " limit " << static_cast<int>(report.outcome.limit) << ", serial "
+         << report.outcome_serial << "\n";
+
+    describe_loop(text, "slot", audio_engine.slot());
+    describe_loop(text, "waiting", audio_engine.waiting());
+
+    return text.str();
+}
+
+void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length)
+{
+    test_noise noise{seed};
+
+    // Whole samples or not; any period from 80 to 180 BPM at 4 PPQN. A quarter of the clocks are
+    // as fast as the tracker takes, or nearly, in whole samples: at 192 samples half a pulse is the
+    // 2 ms in which a reset claims a pulse, so a reset at a fill-in's commit claims that fill-in.
+    const std::array<double, 4> fast{192.0, 192.0, 193.0, 256.0};
+    const bool                  quick  = noise.uniform() < 0.25;
+    const bool                  whole  = quick || noise.uniform() < 0.5;
+    const double                jitter = quick || noise.uniform() < 0.5 ? 0.0 : 3.0;
+    double period = quick ? fast[static_cast<std::size_t>(noise.uniform() * 4.0)]
+                          : 4'000.0 + (5'000.0 * noise.uniform());
+
+    if (whole) {
+        period = std::round(period);
+    }
+
+    const auto end  = static_cast<double>(length.value());
+    double     time = 1'000.0 + std::round(period * noise.uniform());
+
+    // The clock's edges in delivery order: a reset at the same moment as a pulse goes before or
+    // after it, as drawn.
+    struct edge_event {
+        clock_event_type type;
+        sample_time      when;
+    };
+
+    std::vector<edge_event> edges;
+
+    while (time < end) {
+        const double edge = time + noise.uniform(jitter);
+
+        // A reset around a pulse, within the 2 ms that make them one moment, or exactly at it:
+        // around one pulse in a hundred, and on a fast clock one in a thousand, so that a reset at
+        // a commit (below) is still what numbers the bars when a press comes.
+        const double reset = noise.uniform() * (quick ? 10.0 : 1.0);
+        const double near  = noise.uniform() < 0.3 ? 0.0 : noise.uniform(96.0);
+
+        if (reset < 0.01) {
+            edges.push_back({.type = clock_event_type::reset, .when = at_time(edge + near)});
+        }
+
+        edges.push_back({.type = clock_event_type::pulse, .when = at_time(edge)});
+
+        if (reset >= 0.01 && reset < 0.02) {
+            edges.push_back({.type = clock_event_type::reset, .when = at_time(edge + near)});
+        }
+
+        // Mostly steady. Now and then the clock stops and restarts at a new phase. Unless it is
+        // fast it may also slow by 2.5x or more, so that its fill-ins are retired, speed back up,
+        // or drift: a fast clock keeps its period, so that its fill-ins commit half a pulse after
+        // their slots to the tick, where resets tie with them.
+        const double drawn  = noise.uniform();
+        const double change = quick && drawn >= 0.015 ? 1.0 : drawn;
+
+        if (change < 0.015) {
+            time += period * (2.6 + (4.0 * noise.uniform()));
+        }
+        else if (change < 0.03 && period < 12'000.0) {
+            const std::array<double, 4> slowdowns{3.5, 4.5, 2.6 + noise.uniform(), 5.0};
+
+            period *= slowdowns[static_cast<std::size_t>(noise.uniform() * 4.0)];
+            time += period;
+        }
+        else if (change < 0.04 && period > 12'000.0) {
+            period = std::round(period / 4.0);
+            time += period;
+        }
+        else if (change < 0.05) {
+            period *= 0.95 + (0.1 * noise.uniform());
+            time += period;
+        }
+        else {
+            time += period;
+        }
+
+        if (whole) {
+            time = std::round(time);
+        }
+    }
+
+    std::ranges::stable_sort(edges, {}, &edge_event::when);
+
+    // Where the engine's grid will put each bar line, and when it arrives: as its pulse, or as its
+    // fill-in commits. Found by a tracker fed as the engine feeds its own.
+    struct arrival {
+        sample_time when;
+        sample_time line;
+        sample_time period;
+    };
+
+    clock_history<1'536> memory{};
+    clock_tracker        grid{clock_tracker_config::gate(sample_rate{48'000U}), memory};
+
+    std::vector<arrival>     arrivals;
+    std::vector<sample_time> commits;
+    std::int64_t             recorded = -1;
+
+    const auto note_arrivals = [&](sample_time now) {
+        const std::optional<std::int64_t> latest = grid.latest_pulse();
+        const std::optional<sample_time>  each   = grid.pulse_period();
+
+        if (!latest || !each) {
+            return;
+        }
+
+        for (std::int64_t index = std::max(recorded + 1, *latest - 3); index <= *latest; ++index) {
+            const std::optional<sample_time> line = grid.pulse_time(index);
+
+            if (line && index % grid.pulses_per_bar() == 0) {
+                arrivals.push_back({.when = now, .line = *line, .period = *each});
+            }
+        }
+
+        recorded = *latest;
+    };
+
+    for (const edge_event& edge : edges) {
+        for (auto due = grid.next_fill_in(); due && *due < edge.when;) {
+            grid.advance(*due);
+            commits.push_back(*due);
+            note_arrivals(*due);
+
+            // Each commit comes after the last, or this would loop for ever.
+            const std::optional<sample_time> next = grid.next_fill_in();
+
+            REQUIRE((!next || *next > *due));
+            due = next;
+        }
+
+        if (edge.type == clock_event_type::pulse) {
+            grid.pulse(edge.when);
+            note_arrivals(edge.when);
+            rig.pulse(edge.when);
+        }
+        else {
+            grid.reset(edge.when);
+            recorded = grid.latest_pulse().value_or(-1);
+            rig.reset(edge.when);
+        }
+    }
+
+    // Presses after the first 3 s. Most come in pairs: an early press within a quarter beat of a
+    // line, waiting for it, and a second as the line arrives, a tick either side of it, or in the
+    // same 3,072 frames. Some lines get a reset too, just before their pulse or just after, while
+    // the first press waits or once it has started. The rest are a tick either side of a fill-in's
+    // commit, or anywhere; and a few resets are at a commit.
+    constexpr std::array<capture_bars, 4> counts{
+        capture_bars::one,
+        capture_bars::two,
+        capture_bars::four,
+        capture_bars::eight,
+    };
+
+    const auto bars_drawn = [&] {
+        return counts[static_cast<std::size_t>(noise.uniform() * 4.0)];
+    };
+    const sample_time three_seconds = at_time(144'000.0);
+    const sample_time one_tick      = sample_time::from_ticks(1);
+
+    std::erase_if(arrivals, [&](const arrival& each) {
+        return each.line - (each.period * 2) < three_seconds;
+    });
+    std::erase_if(commits, [&](sample_time each) {
+        return each < three_seconds;
+    });
+
+    for (int press = 0; press < 8 && !arrivals.empty(); ++press) {
+        const arrival& line = arrivals[static_cast<std::size_t>(
+            noise.uniform() * static_cast<double>(arrivals.size()))];
+
+        const auto lead = std::llround(static_cast<double>(line.period.ticks()) * noise.uniform());
+
+        rig.press(line.line - sample_time::from_ticks(lead), bars_drawn());
+
+        const std::array<sample_time, 4> seconds{
+            line.when,
+            line.when - one_tick,
+            line.when + one_tick,
+            line.when + at_time(3'072.0 * noise.uniform()),
+        };
+        const sample_time after = seconds[static_cast<std::size_t>(noise.uniform() * 4.0)];
+
+        if (after >= three_seconds) {
+            rig.press(after, bars_drawn());
+        }
+
+        const double reset = noise.uniform();
+
+        if (reset < 0.15) {
+            rig.reset(line.when - at_time(96.0 * noise.uniform()));
+        }
+        else if (reset < 0.3) {
+            rig.reset(line.when + (reset < 0.2 ? one_tick : at_time(96.0 * noise.uniform())));
+        }
+    }
+
+    for (int press = 0; press < 4 && !commits.empty(); ++press) {
+        const sample_time commit = commits[static_cast<std::size_t>(
+            noise.uniform() * static_cast<double>(commits.size()))];
+
+        rig.press(commit + (noise.uniform() < 0.5 ? -one_tick : one_tick), bars_drawn());
+    }
+
+    // Resets at a fill-in's commit as well: a tick either side of it, or exactly on it.
+    for (int reset = 0; reset < 6 && !commits.empty(); ++reset) {
+        const sample_time                commit = commits[static_cast<std::size_t>(
+            noise.uniform() * static_cast<double>(commits.size()))];
+        const std::array<sample_time, 3> around{commit - one_tick, commit, commit + one_tick};
+
+        rig.reset(around[static_cast<std::size_t>(noise.uniform() * 3.0)]);
+    }
+
+    for (int press = 0; press < 4; ++press) {
+        rig.press(three_seconds + at_time((end - 144'000.0) * noise.uniform()), bars_drawn());
+    }
+}
+
+void check_any_block_size(std::uint64_t                seed,
+                          std::span<const std::size_t> block_sizes,
+                          samples                      checkpoint,
+                          std::int64_t                 checkpoints)
+{
+    CAPTURE(seed);
+
+    std::vector<std::string> reference;
+
+    for (const std::size_t frames : block_sizes) {
+        CAPTURE(frames);
+        REQUIRE(checkpoint.value() % static_cast<std::int64_t>(frames) == 0);
+
+        // P1's 187 pages, the history and three loops of 47; or fewer, so that a loop in the slot
+        // can keep out a press, and whether a press comes after a capture has started shows.
+        const std::array<std::size_t, 3> pages{187, 62, 70};
+        std::vector<stereo_frame>        tape =
+            tape_of(pages[static_cast<std::size_t>(seed % 3)], sample_rate{48'000U});
+        clocked_engine rig{
+            engine_config{.rate = sample_rate{48'000U}, .max_block_frames = frames},
+            tape,
+        };
+
+        add_random_scenario(rig, seed, checkpoint * checkpoints);
+
+        for (std::int64_t k = 1; k <= checkpoints; ++k) {
+            CAPTURE(k);
+
+            rig.run_until(checkpoint * k);
+            check_holders(rig.target());
+
+            const std::string described = describe_capture(rig.target());
+            const auto        index     = static_cast<std::size_t>(k - 1);
+
+            if (reference.size() <= index) {
+                reference.push_back(described);
+            }
+            else {
+                CHECK(described == reference[index]);
+            }
+        }
     }
 }
 

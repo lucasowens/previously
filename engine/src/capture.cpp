@@ -56,81 +56,29 @@ void capture::press(sample_time when, capture_bars bars, const clock_tracker& gr
     // Lines at least two pulses apart cannot cross, each moving by at most half a pulse.
     expects(grid.pulses_per_bar() >= 2);
 
+    // Everything the grid knows by now comes first: a waiting capture's line may have arrived.
+    check(when, grid);
+
     // A capture still waiting for its line is superseded, whatever becomes of this press.
     waiting_loop().clear();
 
-    const std::optional<sample_time>  period = grid.pulse_period();
-    const std::optional<std::int64_t> bar    = grid.bar_at_or_before(when);
+    waiting_pressed_ = when;
+    waiting_asked_   = bars;
 
-    if (!period || !bar) {
-        conclude({.result = capture_result::no_tempo, .asked = bars});
-        report_states();
-        return;
-    }
-
-    // The next line if it is at most a quarter beat away, compared four times over so that no
-    // quarter beat is rounded. Otherwise the most recent line.
-    const std::optional<sample_time> next_line = grid.bar_start(*bar + 1);
-    const sample_time                beat      = *period * grid.pulses_per_beat();
-    const bool                       early     = next_line && ((*next_line - when) * 4) <= beat;
-    const std::int64_t               end_bar   = early ? *bar + 1 : *bar;
-
-    // Every line the press could reach, counted back from the end line: a shorter capture takes
-    // the newest of them.
-    const std::int64_t end_sequence = grid.sequence_of(end_bar * grid.pulses_per_bar());
-    const std::size_t  most         = bars_of(bars);
-    line_fixes         fixes{};
-
-    for (std::size_t back = 0; back <= most; ++back) {
-        fixes[back] =
-            locate(grid, end_sequence - (static_cast<std::int64_t>(back) * grid.pulses_per_bar()));
-    }
-
-    const samples     history_begin = history_begin_at(when);
-    const sample_time reserve       = *period / 2;
-    const fitting     fitted        = fit(fixes, bars, history_begin, reserve);
-
-    if (!fitted.plan) {
-        conclude({.result = capture_result::nothing_fits, .asked = bars, .limit = fitted.limit});
-        report_states();
-        return;
-    }
-
-    const window_plan& planned = *fitted.plan;
-
-    if (!fits_the_pool(planned.held)) {
-        conclude({.result = capture_result::pool_full, .asked = bars});
-        report_states();
-        return;
-    }
-
-    take(waiting_loop(), planned, end_bar, grid.numbered_by_reset());
-
-    waiting_asked_         = bars;
-    waiting_kept_          = planned.bars;
-    waiting_history_begin_ = history_begin;
-    waiting_end_bar_       = end_bar;
-    waiting_reserve_       = reserve;
-
-    conclude({
-        .result = planned.bars == bars ? capture_result::committed : capture_result::shortened,
-        .asked  = bars,
-        .kept   = planned.bars,
-        .limit  = fitted.limit,
-    });
-
-    // A capture whose end line is recorded starts now. One whose line is still to come waits.
-    if (planned.lines[bars_of(planned.bars)].status != line_status::predicted) {
-        take_slot();
-    }
-
+    conclude(plan(when, bars, history_begin_at(when), grid));
     report_states();
 }
 
-void capture::follow(const clock_tracker& grid) noexcept
+void capture::check(sample_time now, const clock_tracker& grid) noexcept
 {
+    // First the slot's lines whose pulses a retirement took: their sequences name other pulses.
+    keep_retired(slot_loop(), grid);
+
+    if (!waiting_loop().empty() && labels_of(grid) != waiting_labels_) {
+        plan_again(now, grid);
+    }
+
     if (!waiting_loop().empty()) {
-        waiting_loop().catch_up(*history_);
         settle(waiting_loop(), grid);
 
         if (grid.edge(grid.index_of(waiting_loop().lines().back().sequence))) {
@@ -139,13 +87,21 @@ void capture::follow(const clock_tracker& grid) noexcept
     }
 
     // After the arrival, which may have put a new loop in the slot: its end line can be final
-    // within the block that brought it. A final loop still holds pages to come: on a fast clock its
-    // 8 pulses end before its read margin does.
-    if (!slot_loop().empty()) {
-        slot_loop().catch_up(*history_);
+    // already.
+    if (!slot_loop().empty() && !slot_loop().is_final()) {
+        settle(slot_loop(), grid);
+    }
 
-        if (!slot_loop().is_final()) {
-            settle(slot_loop(), grid);
+    report_states();
+}
+
+void capture::follow() noexcept
+{
+    // A final loop still holds pages to come: on a fast clock its 8 pulses end before its read
+    // margin does.
+    for (captured_loop& loop : loops_) {
+        if (!loop.empty()) {
+            loop.catch_up(*history_);
         }
     }
 
@@ -167,6 +123,11 @@ const captured_loop& capture::waiting() const noexcept
     return loops_[1U - slot_index_];
 }
 
+capture::labelling capture::labels_of(const clock_tracker& grid) noexcept
+{
+    return labelling{.bar_zero = grid.sequence_of(0), .retirements = grid.retirements()};
+}
+
 std::optional<capture::line_fix> capture::locate(const clock_tracker& grid,
                                                  std::int64_t         sequence) noexcept
 {
@@ -186,6 +147,73 @@ std::optional<capture::line_fix> capture::locate(const clock_tracker& grid,
     }
 
     return std::nullopt;
+}
+
+capture_outcome capture::plan(sample_time          when,
+                              capture_bars         bars,
+                              samples              history_begin,
+                              const clock_tracker& grid) noexcept
+{
+    const std::optional<sample_time>  period = grid.pulse_period();
+    const std::optional<std::int64_t> bar    = grid.bar_at_or_before(when);
+
+    if (!period || !bar) {
+        waiting_loop().clear();
+        return {.result = capture_result::no_tempo, .asked = bars};
+    }
+
+    // The next line if it is at most a quarter beat away, compared four times over so that no
+    // quarter beat is rounded. Otherwise the most recent line.
+    const std::optional<sample_time> next_line = grid.bar_start(*bar + 1);
+    const sample_time                beat      = *period * grid.pulses_per_beat();
+    const bool                       early     = next_line && ((*next_line - when) * 4) <= beat;
+    const std::int64_t               end_bar   = early ? *bar + 1 : *bar;
+
+    // Every line the press could reach, counted back from the end line: a shorter capture takes
+    // the newest of them.
+    const std::int64_t end_sequence = grid.sequence_of(end_bar * grid.pulses_per_bar());
+    const std::size_t  most         = bars_of(bars);
+    line_fixes         fixes{};
+
+    for (std::size_t back = 0; back <= most; ++back) {
+        fixes[back] =
+            locate(grid, end_sequence - (static_cast<std::int64_t>(back) * grid.pulses_per_bar()));
+    }
+
+    const sample_time reserve = *period / 2;
+    const fitting     fitted  = fit(fixes, bars, history_begin, reserve);
+
+    if (!fitted.plan) {
+        waiting_loop().clear();
+        return {.result = capture_result::nothing_fits, .asked = bars, .limit = fitted.limit};
+    }
+
+    const window_plan& planned = *fitted.plan;
+
+    if (!fits_the_pool(planned.held)) {
+        waiting_loop().clear();
+        return {.result = capture_result::pool_full, .asked = bars};
+    }
+
+    take(waiting_loop(), planned, end_bar, grid.numbered_by_reset());
+
+    waiting_kept_          = planned.bars;
+    waiting_history_begin_ = history_begin;
+    waiting_end_bar_       = end_bar;
+    waiting_reserve_       = reserve;
+    waiting_labels_        = labels_of(grid);
+
+    // A capture whose end line is recorded starts now. One whose line is still to come waits.
+    if (planned.lines[bars_of(planned.bars)].status != line_status::predicted) {
+        take_slot();
+    }
+
+    return {
+        .result = planned.bars == bars ? capture_result::committed : capture_result::shortened,
+        .asked  = bars,
+        .kept   = planned.bars,
+        .limit  = fitted.limit,
+    };
 }
 
 capture::fitting capture::fit(const line_fixes& fixes,
@@ -294,6 +322,22 @@ samples capture::position_of(sample_time time) const noexcept
     return (time + input_latency_).nearest_sample();
 }
 
+void capture::plan_again(sample_time now, const clock_tracker& grid) noexcept
+{
+    // The frames it can still have: the history it was planned from, as far as the history now
+    // or the pages it holds still have it. A waiting capture's window is behind its press, so its
+    // run's first page is held.
+    const samples held_from{waiting_loop().first_page() * pool_->page_frames().value()};
+    const samples history_begin =
+        std::max(waiting_history_begin_, std::min(history_begin_at(now), held_from));
+
+    const capture_outcome outcome = plan(waiting_pressed_, waiting_asked_, history_begin, grid);
+
+    if (outcome != report_.outcome) {
+        conclude(outcome);
+    }
+}
+
 void capture::arrive(const clock_tracker& grid) noexcept
 {
     captured_loop&                   arriving = waiting_loop();
@@ -342,6 +386,41 @@ void capture::arrive(const clock_tracker& grid) noexcept
     take_slot();
 }
 
+void capture::keep_retired(captured_loop& loop, const clock_tracker& grid) noexcept
+{
+    if (loop.empty() || loop.is_final()) {
+        return;
+    }
+
+    // A line whose pulse was retired cannot be estimated any more: its sequence names another
+    // pulse, or none yet. It keeps its edge, final. A line still on its own pulse is unchanged.
+    const std::size_t last = loop.bars();
+
+    for (std::size_t k = 0; k <= last; ++k) {
+        const loop_line line = loop.lines()[k];
+
+        if (line.status != line_status::edge) {
+            continue;
+        }
+
+        const std::optional<pulse_edge> edge = grid.edge(grid.index_of(line.sequence));
+
+        if (edge && edge->time == line.time) {
+            continue;
+        }
+
+        loop.set_line(k,
+                      loop_line{
+                          .sequence = line.sequence,
+                          .time     = line.time,
+                          .position = line.position,
+                          .status   = line_status::final,
+                      });
+    }
+
+    finish(loop);
+}
+
 void capture::settle(captured_loop& loop, const clock_tracker& grid) noexcept
 {
     const std::size_t last = loop.bars();
@@ -376,6 +455,11 @@ void capture::settle(captured_loop& loop, const clock_tracker& grid) noexcept
                       });
     }
 
+    finish(loop);
+}
+
+void capture::finish(captured_loop& loop) noexcept
+{
     // Final: only the window and its margins are held now, and the reserve goes back.
     if (loop.is_final()) {
         loop.hold(

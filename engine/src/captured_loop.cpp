@@ -100,34 +100,59 @@ void captured_loop::hold(tape_range range, const recorder& history) noexcept
     const auto         count = static_cast<std::size_t>(last - first + 1);
 
     expects(count <= max_pages);
-    expects(pages_held_ == 0 || first >= first_page_);
 
-    // Pages before the new start go back from the front, and the rest move up to keep their order.
-    const auto dropped = pages_held_ == 0
-                             ? std::size_t{0}
-                             : std::min(pages_held_, static_cast<std::size_t>(first - first_page_));
+    // The new run's pages, in order: those the loop holds already, and the rest from the history
+    // while it has them. Before the held pages it must still have them: a run grows at its front
+    // only when a capture planned again starts earlier, from the history (DESIGN.md §3.4). Pages
+    // still to be recorded are left to catch_up().
+    const std::int64_t held_from   = first_page_;
+    const std::int64_t held_to     = first_page_ + static_cast<std::int64_t>(pages_held_);
+    const samples      page_frames = pool_->page_frames();
 
-    for (const page_pool::page_id page : std::span{pages_}.first(dropped)) {
-        pool_->release(page);
+    std::array<page_pool::page_id, max_pages> run{};
+    std::size_t                               run_held = 0;
+
+    while (run_held < count) {
+        const std::int64_t number = first + static_cast<std::int64_t>(run_held);
+
+        if (number >= held_from && number < held_to) {
+            run[run_held] = pages_[static_cast<std::size_t>(number - held_from)];
+            ++run_held;
+            continue;
+        }
+
+        const samples start{number * page_frames.value()};
+
+        if (start >= history.end()) {
+            break;
+        }
+
+        const auto page = history.page_at(start);
+
+        expects(page.has_value());
+
+        if (!page) {
+            break;
+        }
+
+        pool_->retain(*page);
+        run[run_held] = *page;
+        ++run_held;
     }
 
-    for (std::size_t kept = dropped; kept < pages_held_; ++kept) {
-        pages_[kept - dropped] = pages_[kept];
+    // The pages held before that the new run does not keep go back.
+    for (std::int64_t number = held_from; number < held_to; ++number) {
+        if (number < first || number >= first + static_cast<std::int64_t>(run_held)) {
+            pool_->release(pages_[static_cast<std::size_t>(number - held_from)]);
+        }
     }
 
-    pages_held_ -= dropped;
-
-    // Pages after the new end go back from the back.
-    while (pages_held_ > count) {
-        --pages_held_;
-        pool_->release(pages_[pages_held_]);
-    }
+    std::ranges::copy(std::span{run}.first(run_held), pages_.begin());
 
     held_       = range;
     first_page_ = first;
-    page_count_ = std::min(count, max_pages);
-
-    catch_up(history);
+    page_count_ = count;
+    pages_held_ = run_held;
 }
 
 void captured_loop::catch_up(const recorder& history) noexcept
