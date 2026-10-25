@@ -246,7 +246,7 @@ build links with, so the budget follows the layout.
 | With the history's peaks and the UI model (§9.3) | 88% (115,660 bytes) | 6,788 bytes more unoptimized; 4,024 at `-O3` with LTO |
 | With the engine optimized (issue #11) | 60% (79,152 bytes) | The engine at `-O3` with LTO, as the firmware's own sources are |
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
-| With the estimate reading edges in place (PR #21) | 72% (94,764 bytes) | 848 bytes more, for 1,880 bytes less stack: it reads the tracker's edges twice rather than copying them once |
+| With the estimate reading edges in place (PR #21) | 72% (94,404 bytes) | 488 bytes more, for 1,928 bytes less stack: it reads the tracker's edges twice rather than copying them once |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -301,12 +301,12 @@ padding included, plus `.dtcmram_bss`.
 - **Today** they take 83,492 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
   the engine (31,288 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 968
   capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 4.7 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 3.5 KB once audio runs and about 1.1 KB
-  at start-up. The 3.5 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
+- **The stack reserve** is about 4.8 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 3.4 KB once audio runs and about 1.1 KB
+  at start-up. The 3.4 KB is `main()`'s frame and the audio interrupt: the FPU's exception frame,
   the DMA handler, libDaisy's callback with its two arrays of a block's samples (912 bytes at 48
   frames), the engine's `process()` (inlined into the firmware's callback), and capture's
-  `press()` (848 bytes) calling the bar-line estimate (1,256 bytes).
+  `press()` (848 bytes) calling the bar-line estimate (1,208 bytes).
   - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
     sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
     took 3,136 bytes, and the chain about 5.3 KB.
@@ -735,7 +735,7 @@ The other notes:
 - **Cost.** It runs on the audio thread, at a capture's press and when its lines become final.
   Everything is in fixed arrays: 73 residuals in ticks, read from the tracker's edges in place,
   66 third differences, 12 second differences, and 2 × 8 × 7 slopes, each list sorted in place
-  for its median. Its time is bounded, it allocates nothing, and its frame is 1,256 bytes in the
+  for its median. Its time is bounded, it allocates nothing, and its frame is 1,208 bytes in the
   firmware (§2.3).
 - **Tests.**
   - The 132 deterministic scenarios, recovered from PR #6's probe by replaying its edits, each run

@@ -135,7 +135,7 @@ however the binary is run.
     capture's pulses rather than planning a waiting one again
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
   asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
-  grew. The stack reserve is about 4.7 times the deepest chain, capture's press through the
+  grew. The stack reserve is about 4.8 times the deepest chain, capture's press through the
   bar-line estimate (DESIGN §2.3).
 - **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
   #11): flash is 72% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,
