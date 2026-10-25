@@ -548,9 +548,9 @@ estimated from the edges *x* of the 8 pulses on each side:
    - **within the sides:** *c_within* = half the median of the 12 second differences
      *x_{j+1}* − 2·*x_j* + *x_{j−1}* inside the two fitted sides (6 each, none using *x_i*). Each
      is 2·*c* plus noise.
-     - A second difference that touches a fill-in is skipped, as for *σ̂*: fill-ins follow the
-       last period and carry no curvature.
-     - With none left, *c* = 0. That affects accuracy only, because step 4's bound covers it.
+     - Fill-ins count. They follow the last period, so a second difference that touches one
+       reads as no curvature. Leaving them out, as for *σ̂*, was measured and gave the worse
+       estimates (below).
 
    A tempo step has no curvature inside either side, but its slope difference reads as
    curvature. So *c* = *c_between* only when |*c_between* − *c_within*| ≤ max(¼·|*c_within*|,
@@ -723,7 +723,7 @@ The other notes:
     it planted edges directly, as PR #6's probe did.
 - **What it returns:** the estimated time; which step decided it (a short history, too few jitter
   values, on a straight line, repaired, or kept); *σ̂* and the number of third differences it came
-  from; and, when step 3 ran, *c_within* and the number of second differences it came from.
+  from; and, when step 3 ran, *c_within*.
 - **Half a period**, in step 4, is half the tracker's pulse period: the one the residuals are taken
   from. The probe used half the spacing of the line's two neighbours. Run through the real
   tracker, with its own period, all 132 scenarios come out as the table says.
@@ -762,11 +762,15 @@ The other notes:
       a cell, by up to 159.5 samples (31, 11 and 159);
     - with 10 usable values and no minimum, no line came out worse (1 in 50,000), so a
       deterministic test pins the minimum instead: 15 values keep the edge, and 16 repair it.
-- **Open: *c_within*'s fill-in skip.** It was carried over from *σ̂*, where it matters (step 1),
-  without a measurement of its own. Over 25,344 ramps where the clock stops just after the line,
-  with a hiccup on the line, the skip changes 16 estimates: 12 for the worse, by up to 42
-  samples, and 4 for the better. All 16 stay within 52 samples of the line, where their raw edges
-  are 300 or 1,800 samples off. The rule keeps the skip until this is decided.
+- **Decided: *c_within* counts fill-ins** (PR #20). Until then it skipped them, carried over from
+  *σ̂*, where it matters (step 1), without a measurement of its own. Measured over 130,560 ramps
+  with 1 to 8 fill-ins before the line or at the end of the side after it: ramps of ±5%, ±20% and
+  ±50% over 2, 4 and 8 bars, linear and exponential, starting 0 to 32 pulses before the line;
+  hiccups of 0, 30, 300 and 1,800 samples on the line; no jitter, or ±2 or ±10 samples over 8
+  seeds. Counting fill-ins changes 186 estimates: 158 for the better and 28 for the worse. The
+  worst of the 186 falls from 55.7 samples off to 31.3, and neither rule is ever worse than the
+  raw edge. The 28 are 30-sample hiccups on gentle ramps that go unrepaired, ending at their raw
+  edge. Tests pin one case each way.
 
 #### When the loop starts
 
