@@ -14,6 +14,7 @@
 #include "capture_fixtures.hpp"
 #include "planted_clock.hpp"
 #include "realtime_guard.hpp"
+#include "seam_fixtures.hpp"
 
 #include <doctest/doctest.h>
 
@@ -1082,6 +1083,15 @@ TEST_CASE("a crossfade's gains are equal gain when correlated, equal power when 
 
     CHECK(worst < 0.39);
     CHECK(worst > 0.38);
+}
+
+TEST_CASE("seams on §5.6's signals: the sine's wrap, the bass's move, and the kick's downbeat")
+{
+    // Three of the 36 that `make seeds` checks (test_playback_seams.cpp): the wrap that dips most,
+    // the half-seam that bumps most, and the transient on the downbeat.
+    test::check_seam(test::test_signal::sine, test::seam_kind::wrap);
+    test::check_seam(test::test_signal::bass, test::seam_kind::move);
+    test::check_seam(test::test_signal::kick, test::seam_kind::early_replacement);
 }
 
 }  // namespace

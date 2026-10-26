@@ -10,6 +10,7 @@ add_executable(previously_tests
     flush_to_zero_mode.cpp
     tape_fixtures.cpp
     capture_fixtures.cpp
+    seam_fixtures.cpp
     golden_image.cpp
     planted_clock.cpp
     test_units.cpp
@@ -60,16 +61,19 @@ previously_apply_strict_options(previously_tests)
 add_test(NAME unit COMMAND previously_tests)
 
 # Seeded properties too slow for the sanitizers: the bar-line estimate's at PR #6's seed counts
-# (DESIGN.md §3.4), over a million estimates that take about a minute under the sanitizers; and
+# (DESIGN.md §3.4), over a million estimates that take about a minute under the sanitizers;
 # capture and the output at every block size over 200 scenarios (§3.4, "Capture under change",
-# and §5.7). They run in their own executable, registered only in builds without sanitizers:
-# `make seeds` runs them from the release preset, and `make test` and CI run `make seeds`.
+# and §5.7); and every seam on §5.6's six signals. They run in their own executable, registered
+# only in builds without sanitizers: `make seeds` runs them from the release preset, and `make
+# test` and CI run `make seeds`.
 add_executable(previously_seed_tests
     test_main.cpp
     planted_clock.cpp
     capture_fixtures.cpp
+    seam_fixtures.cpp
     test_bar_line_seeds.cpp
     test_capture_seeds.cpp
+    test_playback_seams.cpp
 )
 
 target_link_libraries(previously_seed_tests PRIVATE
