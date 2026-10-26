@@ -248,6 +248,7 @@ build links with, so the budget follows the layout.
 | With capture (§3.4) | 71% (93,916 bytes) | 14,764 bytes more: capture, and the bar-line estimate it is the first to call |
 | With the estimate reading edges in place (PR #21) | 72% (94,404 bytes) | 488 bytes more, for 1,928 bytes less stack: it reads the tracker's edges twice rather than copying them once |
 | With capture under change (PR #22) | 72% (95,060 bytes) | 656 bytes more: a check at each moment, and planning again |
+| With playback (PR #23) | 81% (106,988 bytes) | 11,928 bytes more: the player, and each block rendered in segments, 4,356 of them inlined into one function |
 
 The figures are from a local build. The image embeds source paths (the engine's contract
 locations, and libstdc++'s header names), so it grows with the length of the repository's and the
@@ -299,21 +300,31 @@ for the stack. Within it, the move to the bootloader layout stays open. They are
 flash: `.data`, `.got`, `.got.plt` and `.bss` from the first to the end of the furthest, alignment
 padding included, plus `.dtcmram_bss`.
 
-- **Today** they take 83,556 bytes (72%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
-  the engine (31,320 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 1,000
-  capture, 472 the UI model, and 824 the pool's and the recorder's other bookkeeping).
-- **The stack reserve** is about 4.5 times the measured need. GCC's `-fstack-usage` report from
-  LTO, summed along the deepest call chains, gives about 3.7 KB once audio runs (3,656 bytes) and
-  about 1.1 KB at start-up. The 3.7 KB is `main()`'s frame and the audio interrupt: the FPU's
+- **Today** they take 84,460 bytes (73%). The largest are libDaisy's `DaisyPod` (37,856 bytes) and
+  the engine (32,256 bytes: 24,768 of them the clock history, 2,944 the history's peaks, 1,536
+  capture with its three loops, 472 the UI model, 280 the player, and 824 the pool's and the
+  recorder's other bookkeeping).
+- **No errno** (PR #23). The engine is built with `-fno-math-errno`, which changes no result:
+  `std::sqrt` is then the FPU's square root instruction alone. Without it, the player's
+  correlation called newlib's `sqrtf`, which sets errno for a negative argument, and that linked
+  newlib's per-thread state: 832 bytes of RAM, 824 of them `_impure_data` and `__sf`, and 668
+  of flash.
+- **The stack reserve** is about 4.3 times the measured need. GCC's `-fstack-usage` report from
+  LTO, summed along the deepest call chains, gives about 3.8 KB once audio runs (3,800 bytes) and
+  about 1.1 KB at start-up. The 3.8 KB is `main()`'s frame and the audio interrupt: the FPU's
   exception frame, the DMA handler, libDaisy's callback with its two arrays of a block's samples
   (912 bytes at 48 frames), the engine's `process()` and its moments (inlined into the firmware's
-  callback, 216 bytes with the block's capture commands), and capture's `press()` (56 bytes),
-  which checks first (160) and can plan a waiting capture again (840) through the bar-line
-  estimate (1,208). A check at a fill-in's commit reaches the same depth.
+  callback, 328 bytes with the block's capture commands), a press at a moment (32), and capture's
+  `press()` (56 bytes), which checks first (160) and can plan a waiting capture again (840)
+  through the bar-line estimate (1,208). A check at a fill-in's commit reaches the same depth.
+  Playback's own frames are shallower: the player renders, follows capture and decides beside
+  the press, not beneath it.
   - The moments are their own function, `visit_moments()`, so that the clock report's 33 grid
     points and the UI model's rebuild stay out of this chain. With them inlined into `process()`
     beside the moments, GCC made one 832-byte frame of it, and the chain 4,320 bytes.
   - Until PR #22 the press planned in its own frame (848 bytes), and the chain was 3,408 bytes.
+    PR #22 left it at 3,656 bytes. Playback added 144: its moments made the callback's frame 112
+    bytes larger, and a press at a moment is now its own frame, which may hold it.
   - The estimate reads the tracker's edges in place, keeps its residuals once, in ticks, and
     sorts its lists in place for their medians (PR #21). Copying the edges and sorting copies, it
     took 3,136 bytes, and the chain about 5.3 KB.
@@ -1348,10 +1359,12 @@ The properties:
   **equal-gain** fade (correlated, the usual case, since it is the same music one bar apart) or
   an **equal-power** fade (uncorrelated), or a blend. This avoids the +3 dB bump an equal-power
   fade puts on correlated material.
-  - The correlation is measured over the 50 ms before the downbeat, on both channels together.
-    On mid alone it would be 0/0 for an anti-phase pair.
+  - The correlation is measured over 50 ms, on both channels together: as built, the 50 ms each
+    stream would play up to the crossfade's end (§5.7). On mid alone it would be 0/0 for an
+    anti-phase pair.
   - Zero energy counts as correlated: equal-gain.
-- **Curves** come from our own polynomial or table, not libm (ADR 0005).
+- **Curves** come from our own polynomial or table, not libm (ADR 0005). As built, the
+  equal-power curve is sin(πx/2), from our own polynomial (§5.7).
 - **Length:** default **8 ms**, with a deep-menu override up to a 1/16 note for pads and bass. (A
   fade shorter than one cycle of a 40 Hz note can still thump.)
 - **No zero-crossing snapping.** It breaks sample accuracy, and in stereo the channels cross zero
@@ -1405,9 +1418,9 @@ this right:
 **One shape rule for every crossfade, seam or seek.** The correlation of the two streams being
 joined chooses the shape, as for the seam (§5.2): equal-gain when they are correlated,
 equal-power when they are not, or a blend.
-- **The window.** An entry into a downbeat measures the 50 ms before the downbeat (§5.2). A seek
-  measures the next 50 ms of both streams from the seek point. Both lie on the tape, because the
-  margins are at least as long as the window (§5.3).
+- **The window.** An entry into a downbeat measures the 50 ms each stream would play up to the
+  crossfade's end (§5.2, §5.7). A seek measures the next 50 ms of both streams from the seek
+  point. Both lie on the tape, because the margins are at least as long as the window (§5.3).
 - **The cost** is a §2.2 row, measured in T5: up to 4,800 stereo frames read from SDRAM per
   crossfade.
 - **Why seeks need it too.** A fixed equal-power seek would peak at +3 dB mid-fade on
@@ -1472,14 +1485,67 @@ The stated exceptions:
   `crossfaded_seek`, so the envelope dips;
 - **a start from silence** (a late press with nothing playing): it is a fade-in, not a seam.
 
-### 5.7 Playback, as it will be built
+**As built** (PR #23, `seam_fixtures.hpp`). Every signal through every way a loop enters a
+downbeat or seeks: the wrap, a bar-locked move, an early start, an early replacement, a late
+start and a late replacement, 36 seams at 120 BPM, in `make seeds`; the sine's wrap, the bass's
+move and the kick's early replacement in the unit tests too.
 
-*Proposed, for approval.* Capture holds a window of the tape (§3.4); playback plays it, at native
-speed and bar-locked (Fixed mode, §3.6). One slot, as capture has. In three PRs:
+- **The click metric is the steepest step,** not the energy: the largest power of the first
+  difference, a high-pass, from 32 samples before a crossfade to 32 after, over the largest in
+  the body of the bar the incoming stream plays, its first and last 0.1 s left out. Over a seam's
+  length the energy spreads a one-sample cut too thin: with no crossfade at all, a cut measured
+  only 0.33 to 2.96 on the sine, and a real seam up to 1.44. The steepest step measures 29 to
+  16,705 for a cut wherever it joins different audio, and at most 2.74 for a real seam, a late
+  start's 3 ms fade-in of the bass from silence. The bound is 4.
+  - The bass's bar is 80 of its cycles at 120 BPM, so its wraps and replacements join the same
+    audio, cut or not. White noise steps as steeply as any cut, and hides one.
+  - **The kick** is checked by its transient instead: its body is its own decaying tail, less
+    steep than its attack anywhere. The downbeat plays at full gain after every entry, and its
+    first millisecond is the loop's to the bit.
+- **The envelope** is the output's power through the crossfade against its two streams' power,
+  weighted as the crossfade moves from one to the other, (1 − x)·a² + x·b², in dB: over the whole
+  crossfade, and over each half. On a stationary signal that is the body's power. On the 40 Hz
+  bass, whose cycle is three entries long, it is the power of the part of the cycle each stream
+  is in: against the body, or against the two streams' mean, an 8 ms part of a 40 Hz cycle reads
+  dBs off with no fault in the seam (+2.66 dB, in a probe).
+- **±1 dB cannot hold for every sine.** Two streams opposed in phase cancel as they cross,
+  whatever the shape: at ρ = −1 the output passes through silence. Through an equal-power
+  crossfade their mean power is 1 + ρ · 2/π, for their correlation ρ over the crossfade itself.
+  §5.6's sine, whose period divides no bar, wraps at ρ = −0.81: −3.13 dB measured, −3.15
+  predicted.
+  - **The bound,** for every seam between two streams: within 1 dB of that dip, and at most 1 dB
+    over; with no dip where ρ ≥ 0.
+  - **The halves,** the same, but for the bass: 2 dB. Its streams' correlation over one half of
+    a crossfade is not their correlation over the other, so one shape cannot suit both; its
+    move measures +1.27 dB over one half. §5.2's longer seam for bass is the remedy.
+  - The crossfade's gains changed from √x to the quarter sine (§5.7) partly for this: √x's dip
+    is 1 + ρ · π/4, −4.36 dB on the same wrap.
+- **Starts from silence,** early or late, are fade-ins, not seams: their click metric is checked,
+  and their envelope is not. Equal gain from silence measures −1.7 dB by design.
+- **Not in the matrix yet:** the silent pre-roll (every test signal plays before its loop is
+  captured), and the wrap slowdown beyond 50 ms − F, whose seek comes in the second playback PR.
+  Its interim is tested to the bit (§5.7).
+- **Measured,** the envelope in dB over the whole crossfade (and its worse half), with ρ over it:
 
-1. **The loop plays** (below): the player, each block rendered in segments, the bar-locked rule
-   at every line, the entry into each downbeat and `crossfaded_seek`, starting and replacing a
-   loop, and the output.
+  | Signal | Wrap | Move | Early replacement | Late replacement |
+  |---|---|---|---|---|
+  | Sine | −3.13 (−3.24), ρ −0.81 | −0.95 (−1.12), ρ −0.31 | +0.23 (+0.26), ρ 0.30 | +0.29 (+0.41), ρ 0.39 |
+  | 40 Hz bass | 0.00, ρ 1 | +0.23 (+1.27), ρ −0.22 | 0.00, ρ 1 | 0.00, ρ 1 |
+  | DC offset, anti-phase | as the sine: the recorder blocks the DC, and ρ sums both channels | | | |
+  | White noise | +0.09 (+0.15), ρ 0.00 | +0.05 (+0.07), ρ 0.00 | +0.03 (+0.16), ρ 0.00 | −0.04 (−0.05), ρ 0.03 |
+  | Kick | silent before each line | silent | silent | 0.00, ρ 1 |
+
+  The click metric is at most 1.42 for every seam between two streams, and 2.74 for a start from
+  silence.
+
+### 5.7 Playback, as built
+
+Capture holds a window of the tape (§3.4); playback plays it, at native speed and bar-locked
+(Fixed mode, §3.6). One slot, as capture has. In three PRs:
+
+1. **The loop plays** (done: PR #23, host only, below): the player, each block rendered in
+   segments, the bar-locked rule at every line, the entry into each downbeat and
+   `crossfaded_seek`, starting and replacing a loop, and the output.
 2. **Playback under change:**
    - the numbering changes at a reset or a retirement, by §3.6's two rules;
    - lines learned late, joined by `crossfaded_seek` (§3.6);
@@ -1509,36 +1575,71 @@ the clock 0.4% slower (119.5 BPM)      each natural downbeat comes 8.4 ms before
                                        (§3.6)
 ```
 
-- **The player** (`loop_player`, new) plays the slot's loop, and enters a capture still waiting
+- **The player** (`loop_player.hpp`) plays the slot's loop, and enters a capture still waiting
   for its line (below). Its playhead is a whole-sample position on the tape: at native speed
   nothing finer is needed. The Q32.32 playhead of §3.6 comes with Tape mode, whose rate is not 1.
   - It reads the loop's frames through the pages the loop holds, never the recorder's: the
-    window is behind the press, so every frame it reads is recorded, and held.
+    window is behind the press, so every frame it reads is recorded, and held. A frame outside
+    the loop's pages reads as silence: a correlation window can reach there on a very fast clock,
+    and so can a wrap played on past the loop's end (below).
+  - It reads a page's run of frames at a time, and a crossfade's frames one by one. Reading every
+    frame through its page made the host tests 10 s slower under the sanitizers.
   - **Which bar is due:** at grid bar g, loop bar (g − first bar) mod N, by its phrase position
     (§3.6). The loop's first bar is due in the bar after the bars it holds.
+  - **Which line comes next:** the line after the playing bar's. The player keeps the pulse that
+    starts the playing bar's line, by its sequence, which a reset never changes (§3.4). It found
+    the line by the time of the bar's downbeat until a test caught that time before the line:
+    a natural downbeat 0.53 samples early read as the bar before, and the same line was planned
+    again, a sample later.
 - **The bar-locked rule, at every line.** For the line of grid bar g, at time L:
-  - **the natural downbeat** is when the playhead would reach the end of the bar it is playing;
+  - **the natural downbeat** is when the playhead reaches the end of the bar it is playing;
   - **the due downbeat** plays on L's nearest sample if the natural one is a whole sample or more
     from L, and at the natural one otherwise. So every downbeat lands less than a sample from its
-    line (§3.6);
+    line, and one moved off its natural downbeat lands within half a sample (§3.6);
   - **if the due bar follows the playing one on the tape and plays at the natural downbeat,** the
     playhead plays on: the audio before the downbeat is what preceded it in the recording;
   - **otherwise the downbeat is entered** (§5.2): over the F samples before whichever comes first,
     the natural downbeat or the due one, the playhead crossfades into the audio before the due
-    downbeat, timed so that the downbeat lands on its sample. The wrap is always entered.
-  - **The decision is made at its moment,** F before the earlier of the two, from the grid's
-    prediction of L then. At 4 PPQN the line's last pulse came a pulse before.
+    downbeat, timed so that the downbeat lands on its sample. The wrap is always entered;
+  - **a downbeat due later than the audio before it reaches.** Before the loop's first bar that
+    audio is the 50 ms of pre-roll, so a wrap more than 50 ms − F late cannot be entered at the
+    natural downbeat. The playhead plays on past the bar's end instead, into what was recorded
+    after it, as far as the loop's pages go, and silence after that; and the entry crossfades
+    into the pre-roll over the F before the line. Every downbeat stays on its line. On a clock
+    3.4% slower (116 BPM) a 1-bar loop's bar is 3,310 or 3,311 samples short of the grid's, and
+    each wrap plays 2,926 or 2,927 samples on before its entry, to the bit, in the tests.
+    - As designed, such a wrap landed early by the excess, the next line correcting it. A loop
+      whose every line is a wrap has no next line to correct it: on that clock its downbeats
+      drifted 1,294 samples further from their lines each bar. The second PR still seeks inside
+      the last bar first (§5.2), so that the audio before the downbeat is the bar's own end.
+  - **The decision is made at its moment,** F before the entry's end, from the grid's prediction
+    of L then. At 4 PPQN the line's last pulse came a pulse before.
 - **The shape of every crossfade**, entry or seek (§5.2, §5.4):
   - **The correlation** ρ of the two streams: their products summed over both channels and the
     window, over √Σa² · √Σb² (ADR 0005), clamped to [0, 1]. Zero energy on either side counts as
-    correlated: ρ = 1. The window is the 50 ms before each stream's downbeat for an entry, and
-    the 50 ms from the seek point for a seek. It is measured once, as the crossfade begins: up to
-    4,800 stereo frames read (§2.2).
-  - **The gains,** at x from 0 to 1 over the crossfade's samples: the incoming stream's is
-    ρ · x + (1 − ρ) · √x, and the outgoing stream's is its mirror image. At ρ = 1 that is
-    equal gain, and at ρ = 0 equal power, exactly, with `std::sqrt` and no libm curve (ADR 0005).
-    Between, the blend's power is at most 0.41 dB over unity (at ρ = 0.48, 22% into the fade),
-    within §5.6's ±1 dB.
+    correlated: ρ = 1. It is measured once, as the crossfade begins: up to 4,800 stereo frames
+    read (§2.2).
+  - **The window** is 50 ms. For an entry, it is the 50 ms each stream would play up to the
+    crossfade's end. For a seek, it is the next 50 ms of both streams from the seek point.
+    - Measured each before its own downbeat, as designed, a move into the next bar read the same
+      audio twice, the bar's end, and was always equal gain: white noise dipped 1.7 dB through
+      it. The two streams are that bar's end a move's length apart.
+    - Measured over the crossfade's own samples instead, every seam a probe measured (five of
+      §5.6's signals through the wrap, a move and both replacements, with √x's gains) came within
+      0.02 dB of the 50 ms window. The 50 ms stays, as designed.
+  - **The gains,** at x from 0 to 1 at the middle of each of the crossfade's samples: the
+    incoming stream's is ρ · x + (1 − ρ) · sin(πx/2), and the outgoing stream's is its mirror
+    image. At ρ = 1 that is equal gain, exactly. At ρ = 0 it is equal power, within 2 × 10⁻⁷.
+    Between, the blend's power is at most 0.39 dB over unity (at ρ = 0.47, half way), within
+    §5.6's ±1 dB.
+    - **sin(πx/2) is our own polynomial** (ADR 0005): below the middle the sine of an angle up
+      to π/4, above it the cosine of what is left, each its Taylor series to within 2 × 10⁻⁹
+      before rounding. It is within 10⁻⁷ of libm's sine in double, from exactly 0 to exactly 1.
+    - **Not √x, as designed.** √x has an infinite slope at 0: a stream fading in over F starts at
+      1/28 of its level, where the sine starts at 1/489. On §5.6's 40 Hz bass through a move,
+      faded at equal power, √x's steepest step was 24.8 times the body's, and the sine's 0.25.
+      The sine also cancels less where the two streams are opposed in phase (§5.6). The blend's
+      bound was 0.41 dB with √x.
   - The downbeat sample itself plays at full gain, after the crossfade.
 - **Starting a loop** (§3.4's "When the loop starts"):
   - **an early press with F or more before its line:** the entry into the first downbeat begins F
@@ -1549,46 +1650,98 @@ the clock 0.4% slower (119.5 BPM)      each natural downbeat comes 8.4 ms before
     (§5.6's stated exception);
   - **a late press:** at once, at the position it would have reached had it started on the end
     line, with a seek;
-  - from silence, or from the loop in the slot, which is then the outgoing stream.
-- **Replacing a loop.** The loop leaving the slot keeps its pages until its last crossfade ends,
-  in a third `captured_loop` (§2.3's budget already has P1's loop being replaced). Admission
-  counts it with every other loop. A capture refused at its line after its entry began, which
-  needs a late edge at a limit, leaves the same way: the player seeks to silence.
-- **Presses during a crossfade wait** for it to end (§3.4), keeping their own timestamps, so at
-  most one loop leaves at a time. If several presses fall in one crossfade, the latest waits and
-  the earlier ones are dropped, as a double press.
-- **The block, in segments** (§10.1). The player's moments join the engine's: the start of each
-  crossfade, decided at its moment after that moment's edges, commits, checks and presses. The
-  audio between two moments is rendered with the state the first one left. So the output, not
-  only capture's decisions, is the same to the bit at any block size.
+  - from silence, at equal gain, or from the loop in the slot, which is then the outgoing stream.
+- **A capture whose entry has begun has started** (`capture::enter_waiting()`): it is heard
+  before its line's edge has come. Until the edge, capture keeps it so:
+  - a replan that only renumbers it takes the new numbering;
+  - a retirement keeps its cut where it was planned, final, as the slot's loop keeps a retired
+    line's edge, and it takes the slot;
+  - refused at its line, or shortened there, it leaves the slot's way, as a loop being replaced
+    does (below). Shortened, its first bars would no longer be the ones playing.
+- **Replacing a loop.** The loop leaving the slot keeps its pages until no crossfade reads it, in
+  a third `captured_loop` (§2.3's budget already has P1's loop being replaced). Admission counts
+  it with every other loop. A capture refused after its entry began leaves the same way, and the
+  player seeks back to the loop in the slot, where that loop would be had it played on into the
+  entry's line; or, with none, to silence.
+  - **At the bar due at the entry's line,** the refused capture's end line. Not the grid's bar at
+    the line's predicted time: the edge that refused it came late, and the grid's bar there was
+    still the one before. A 2-bar loop came back at the wrong bar until a test caught it.
+  - **Its crossfade has always ended.** A capture is refused only at its line's edge, and only
+    when that edge is late: an edge earlier than predicted makes the window shorter. The entry's
+    crossfade ended on the predicted line, or L_out before it. So the player never turns a
+    crossfade round; it waits for one to end, which needs one condition.
+- **Presses wait** (§3.4), keeping their own timestamps: through a crossfade, and through a
+  capture's entry until the capture takes the slot or leaves it. So at most one loop leaves at a
+  time, and a capture that has started is never superseded. Of several presses while one waits,
+  the latest waits and the earlier ones are dropped, as a double press. A press that waited plans
+  from the history as far as it still holds when the press applies.
+- **The block, in segments** (§10.1). The player's moments join the engine's: each line's
+  decision, each crossfade's end, each downbeat, and a waiting capture's entry coming due, each decided
+  after that moment's edges, commits, checks and presses. The audio between two moments is
+  rendered with the state the first one left, and recorded at once. A bar can be as short as a
+  block, so the player can read audio recorded earlier in the same block. So the output, not only
+  capture's decisions, is the same to the bit at any block size: the seeded property compares it
+  over 200 scenarios with noise in, at blocks of 1 to 3,072 frames.
 - **The output.** Until the crossfader comes (§6, P1's next item), OUT is the live input plus the
   loop, both at unity. With no loop, OUT is the bit-exact passthrough, as now. The sum is
   flushed below 2⁻⁵⁰ (ADR 0005).
 - **L_out** is `engine_config::output_latency`, 0 by default and in Rack: playback reads L_out
   ahead, so a downbeat leaves the jack on its line (§3.5).
 - **The loop report** gains whether the player plays, the loop bar playing, and the loop's
-  downbeats in the block, at most 2, with their offsets: what LED 2 and the tests read.
+  downbeats in the block, at most 4, with their offsets: what LED 2 and the tests read. A bar is
+  at least 16 ms, so a block of 3,072 frames at 48 kHz holds at most 4 downbeats; the design
+  said 2.
 - **Until the second PR:**
   - a reset or a retirement renumbering the grid: the due bar follows the new numbering at the
     next line, which is §3.6's first rule, even for a loop whose numbering came from no reset;
-  - a line learned too late for its entry is not joined: the loop plays on, and the next line
-    applies;
-  - a wrap more than 50 ms − F late lands early by the excess, then the next line corrects it.
+  - a line learned too late for its entry: with 2 ms or more left the entry is shortened, with
+    less the downbeat is joined with a seek, and a line already passed is skipped, the loop
+    playing on to the next. At 4 PPQN a line is predicted a pulse ahead, so no test reaches the
+    first two yet;
+  - a wrap later than the pre-roll reaches: played on into the loop's continuation (above).
 - **Host only.** Rack's controls come in the third PR.
-- **Tests:**
-  - every downbeat on its line's nearest sample for 64 bars, on whole-sample and fractional
-    periods; no drift;
-  - §3.6's 0.4% slower clock repeating 8.4 ms a bar, and a faster clock skipping;
+- **Tests** (`test_playback.cpp`, `seam_fixtures.hpp`, `test_playback_seams.cpp`):
+  - every downbeat within a sample of its line, a moved one within half, and one a line, for 64
+    bars on a fractional period; on whole-sample periods, every downbeat on its line's sample,
+    and a natural downbeat exactly a sample early moved onto its line;
+  - §3.6's 0.4% slower clock repeating each bar's end, and a faster clock cutting it short;
+    wraps 2,010 samples late, entered from the pre-roll, and 2,030 and 3,310 late, played on into
+    the continuation, to the bit, one downbeat a line;
+  - an 8-bar loop's every bar on its line, started late and entered early;
   - the click metric and the envelope (§5.6) on the six signals, through the wrap, a bar-locked
-    move, an early start and a replacement, and through a late start's seek and a late
-    replacement; the kick on the downbeat surviving to the sample;
-  - the shape: equal gain on correlated audio, equal power on noise, zero energy as correlated,
-    and the gains' exact bits;
+    move, an early start, an early replacement, a late start's seek and a late replacement: all
+    36 in `make seeds`, and three in the unit tests; the kick on the downbeat surviving to the
+    sample;
+  - the gains: equal gain exactly, the quarter sine's accuracy and power, the blend's bound;
+    every crossfade's exact bits against the correlation of its windows;
   - early presses with F, a sample less, 2 ms and a sample less of lead; a late press's position;
-  - a press during a crossfade waiting, a double press, and a capture refused after its entry;
+  - a press during a crossfade waiting, a double press, a press during an entry waiting for its
+    capture to take the slot; a press that waited applying with its own timestamp, which makes it
+    a late press where its time of applying would make it early, and planning from the history
+    as far as it still holds when it applies;
+  - a capture refused after its entry began, with an empty slot, a 1-bar loop and a 2-bar loop
+    in it; and an 8-bar capture refused, after which the slot's loop plays on to the line after
+    the refused capture's end line;
+  - a loop whose pre-roll starts at the history's first frame wrapping with every frame of its
+    correlation window held (§5.3);
+  - the loop report's `playing` and `bar`;
   - every leaving loop's pages audited;
   - the output the same to the bit at block sizes from 1 to 3,072 frames, in the seeded property;
-  - L_out; no allocation; and a mutation round.
+  - L_out; no allocation.
+
+  **Mutation-checked:** 48 mutants on the player, the engine's held presses and capture's new
+  rules, each confirmed to build against a passing baseline; 46 caught. The first rounds'
+  survivors had no test, and now do:
+  - an 8-bar loop. A downbeat's line taken from the loop's first pulse instead of its end line
+    hid in shorter loops, since the player passes over up to 4 lines already passed;
+  - the pre-roll's reach either side of 2,016 samples, and a natural downbeat exactly a sample
+    from its line;
+  - a press that waited applying with its own timestamp, and from the history at a page's first
+    frame, where the rule has let the oldest page go though the recorder holds it a frame longer.
+
+  Two survive, both of code no test can reach at 4 PPQN: the wait for an entry's crossfade before
+  a refused capture gives way (above: it has always ended), and a line decided with under 2 ms
+  left, which needs a line learned late (the second PR).
 
 ---
 
@@ -1971,11 +2124,11 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
       carrying the bar count. Edges sampled on the audio thread, as in Rack, arrive this way. The
       command queue remains for UI and MIDI threads. Built (§3.4).
     - **`loop()`**, a per-block report: the slot's state, whether a capture is waiting, and the
-      last outcome (committed, shortened or refused, and why). Built (§3.4); the loop's downbeats
-      in the block come with playback.
-    - **Split blocks.** Built (§3.4, "Capture under change, as built"). The engine visits a
-      block's moments in time order: each clock and capture edge, and each fill-in's commit,
-      where a capture's state can change.
+      last outcome (committed, shortened or refused, and why). Built (§3.4); with playback, whether
+      the loop plays, its bar, and its downbeats in the block (§5.7).
+    - **Split blocks.** Built (§3.4, "Capture under change, as built"; §5.7). The engine visits a
+      block's moments in time order: each clock and capture edge, each fill-in's commit, where a
+      capture's state can change, and each of the player's moments.
       - Every decision uses only what is known at its moment.
       - An edge at the same moment as such a check goes first, and a press goes after both.
 
@@ -1983,9 +2136,9 @@ Rack's own Nunito Bold, each at the position of the jack or light it names.
       at its moment. Decisions are therefore identical at any block size, given the same edges and
       the same times at which commands are applied. Commands apply at block starts, a reset as an
       edge and a capture as a press at that moment, so where a command takes effect does depend
-      on the block size. Audio is still processed a block at a time,
-      since nothing in it depends on a decision yet. Playback will render a block in segments,
-      split where its decisions take effect.
+      on the block size. The audio between two moments is rendered with the state the first one
+      left, and recorded at once, so the output too is the same to the bit at any block size
+      (§5.7).
 - **Memory:** the engine receives one memory region at construction, a
   `std::span<stereo_frame>` (SDRAM on device, a heap block on host), and carves it into pages
   (§2.3). `history()` reads back what the recorder has kept.
@@ -2173,7 +2326,7 @@ mode with drift correction, latency calibration.
 |---|---|
 | Clock tracker | Done: PRs #1, #4 |
 | Engine and Rack clock wiring, clock out | Done: PR #2 |
-| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change (done: PR #22, host only); then playback in two PRs, the loop plays and playback under change (§5.7, proposed); then the Rack controls |
+| Retro capture, seam crossfade, bar-locked playback | Designed (v0.3). The tracker's edge times (done: PR #7); the paged tape, recorder, DC blocker and `-ffp-contract=off` (done: PR #10, host only; Rack records onto a tape from PR #13); the bar-line estimate (done: PR #17, host only); capture in two PRs: the window and its pages (done: PR #19, host only), and capture under change (done: PR #22, host only); then playback in two PRs: the loop plays (done: PR #23, host only) and playback under change (§5.7); then the Rack controls |
 | 2 slots, crossfader | To do. Keep one capture in flight engine-wide (§3.4): the 187-page bound (§2.3) relies on it, and two in flight would need 4 × 47 + 46 = 234 pages |
 | Tape mode and drift correction | To do |
 | MIDI clock, internal tempo, tap tempo | To do |

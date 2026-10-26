@@ -76,7 +76,7 @@ however the binary is run.
   `rack/src` and `firmware/src` are thin adapters, the only places vendor APIs (PascalCase)
   appear. `vendor/` is never modified.
 
-## Current state (after PRs #1–#22)
+## Current state (after PRs #1–#23)
 
 - **Done:**
   - `sample_time` (Q47.16) and `clock_tracker`: an alpha-beta tracker with least-squares
@@ -129,6 +129,16 @@ however the binary is run.
     is planned again when the labels change (a reset, or `retirements()`); a loop in the slot
     keeps its pulses and numbering, and a line whose pulse was retired keeps its edge. A seeded
     property runs scenarios at blocks of 1 to 3,072 frames (`make seeds`).
+  - Playback's first PR (PR #23, DESIGN §5.7 "Playback, as built", `loop_player.hpp`): the slot's
+    loop plays at native speed, bar-locked: each downbeat less than a sample from its line,
+    entered over F = 8 ms or joined by a 3 ms seek, with the crossfade's shape chosen by the
+    streams' correlation (gains ρ·x + (1 − ρ)·sin(πx/2), our own polynomial). An early press
+    enters its capture before the line's edge (a capture that has started), a late one seeks; a
+    replaced or refused loop leaves through a third `captured_loop`; presses wait through a
+    crossfade or an entry. Each block is rendered and recorded in segments between moments, so
+    the output is bit-exact at any block size. OUT = live + loop at unity. §5.6's seam matrix
+    (six signals × six seams) runs in `make seeds`. Host only. The host tests take about 80 s
+    under ASan: every captured loop now plays.
 - **Known, pinned limitations:**
   - A halving whose confirming pulse is more than a quarter period late keeps 2 filled-in pulses
   - Displacements over half a period can repeat or skip an index in reports (still covered)
@@ -139,14 +149,20 @@ however the binary is run.
     full-length loop cannot be replaced, and 52 at 705.6 and 768 kHz, where loops get 6 pages
     and one bar needs 74.7 BPM. A module's resident memory follows the highest rate it has run
     at: 184 MiB at 768 kHz. A rate change starts the history again
+  - Two streams opposed in phase dip through a crossfade by their cancellation, 1 + ρ·2/π: −3.1 dB
+    on §5.6's sine at its wrap. A 40 Hz bass's 8 ms seam can be 1.3 dB off over one half
+  - Until playback's second PR: renumbering applies at the next line; a wrap later than the
+    pre-roll reaches plays on into the loop's continuation before its entry; a line learned late
+    is entered shortened, joined by a seek, or skipped
 - **Deferred by the user:** bootloader/QSPI and other hardware work. Don't propose it unless
-  asked. The RAM budget (72% now) keeps the bootloader layout open; if it trips, report what
-  grew. The stack reserve is about 4.5 times the deepest chain, capture's press checking and
+  asked. The RAM budget (73% now) keeps the bootloader layout open; if it trips, report what
+  grew. The stack reserve is about 4.3 times the deepest chain, capture's press checking and
   planning again through the bar-line estimate (DESIGN §2.3).
 - **The engine is built at `-O3` with LTO in the firmware** since PR #18 (DESIGN §2.3, issue
-  #11): flash is 72% and RAM 72%, and T0 fails the build if an engine source loses `-O3`,
-  `-flto` or `-ffp-contract=off`, or gains NDEBUG. If the flash budget trips, try `-Os` next and
-  report the trade-off.
-- **Next:** playback (§5, §3.6), then the Rack controls. The crossfade-bits test and the floor
-  test through the seam correlation belong to playback, and so does rendering a block in segments
-  where capture's decisions take effect (§10.1).
+  #11): flash is 81% and RAM 73%, and T0 fails the build if an engine source loses `-O3`,
+  `-flto` or `-ffp-contract=off`, or gains NDEBUG. The engine is also built with
+  `-fno-math-errno` (PR #23), which keeps newlib's errno state out. If the flash budget trips,
+  try `-Os` next and report the trade-off.
+- **Next:** playback under change (§5.7's second PR: §3.6's renumbering rules, lines learned
+  late, and the seek inside the last bar for a wrap the pre-roll cannot reach), then the Rack
+  controls.
