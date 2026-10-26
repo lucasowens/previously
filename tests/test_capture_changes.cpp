@@ -89,9 +89,11 @@ TEST_CASE("a capture waiting for a fill-in starts as it commits: a press a tick 
           "it, and a tick sooner supersedes it")
 {
     // The last real pulse is bar 6's 8th. Bar 7's line is a fill-in, committed half a pulse after
-    // its slot. An early 4-bar press waits for it; then a 1-bar late press. In 62 pages the two
-    // do not fit together, so the late press is refused if the 4-bar capture has started, and
-    // otherwise supersedes it and waits for the same line.
+    // its slot. An early 4-bar press 1 ms before the line waits for it, too near for an entry to
+    // begin (DESIGN.md §5.7); then a 1-bar late press. In 62 pages the two do not fit together,
+    // so the late press is refused if the 4-bar capture has started, and otherwise supersedes it
+    // and waits for the same line. A tick after the commit, it waits for the seek that starts the
+    // 4-bar loop, and is refused as it ends.
     constexpr std::int64_t commits = line(7) + reserve;
 
     for (const std::size_t frames : {std::size_t{480}, std::size_t{600}, std::size_t{3'072}}) {
@@ -105,7 +107,7 @@ TEST_CASE("a capture waiting for a fill-in starts as it commits: a press a tick 
             const engine&             audio = rig.target();
 
             rig.steady_clock(at_sample(0), at_sample(pulse_samples), (6 * pulses_per_bar) + 9);
-            rig.press(at_sample(line(7) - 4'800), capture_bars::four);
+            rig.press(at_sample(line(7) - 48), capture_bars::four);
             rig.press(at_sample(commits) + offset, capture_bars::one);
             rig.run_through(at_sample(commits + 1));
 
@@ -596,7 +598,8 @@ TEST_CASE("a capture waiting for a fill-in is planned again by a retirement at t
           "commits, and kept a tick later")
 {
     // The tie that decides between planned again and kept (DESIGN.md §3.4). Bar 6's line is a
-    // fill-in at 573,000, committing at 576,000. An early 4-bar press waits for it at 571,000.
+    // fill-in at 573,000, committing at 576,000. An early 4-bar press waits for it at 572,950, too
+    // near the line for an entry to begin (DESIGN.md §5.7).
     //   - The retiring pulse at 576,000 goes first: the capture is planned again on the slowed
     //     grid, where the press falls in bar 5, far from bar 6's line. A late press then, it ends
     //     at bar 5's line, at 480,000, final already.
@@ -613,7 +616,7 @@ TEST_CASE("a capture waiting for a fill-in is planned again by a retirement at t
             const engine&             audio = rig.target();
 
             tie_clock(rig, 6, tie ? sample_time{} : one_tick);
-            rig.press(at_sample(571'000), capture_bars::four);
+            rig.press(at_sample(572'950), capture_bars::four);
             rig.run_through(at_sample(576'000) + one_tick);
 
             CHECK(audio.loop().slot == slot_state::final);
@@ -638,16 +641,16 @@ TEST_CASE("a capture waiting for a fill-in is planned again by a retirement at t
 
 TEST_CASE("a capture planned again by a retirement can be shortened by it")
 {
-    // The same tie at bar 5: the fill-in at 477,000 commits at 480,000. Pressed at 475,000, the
-    // 4 bars from bar 1's line fit. Planned again, the capture ends at bar 4's line, and 4 bars
-    // would start at bar 0's, the clock's first pulse at sample 0, whose pre-roll was never
-    // recorded: shortened to 2 bars by the history, and the serial says so.
+    // The same tie at bar 5: the fill-in at 477,000 commits at 480,000. Pressed at 476,950, too
+    // near for an entry, the 4 bars from bar 1's line fit. Planned again, the capture ends at bar
+    // 4's line, and 4 bars would start at bar 0's, the clock's first pulse at sample 0, whose
+    // pre-roll was never recorded: shortened to 2 bars by the history, and the serial says so.
     std::vector<stereo_frame> tape = tape_of(p1_pages, rate_48k);
     clocked_engine            rig{blocks_of(480), tape};
     const engine&             audio = rig.target();
 
     tie_clock(rig, 5, sample_time{});
-    rig.press(at_sample(475'000), capture_bars::four);
+    rig.press(at_sample(476'950), capture_bars::four);
     rig.run_until(samples{480'000});
 
     REQUIRE(audio.loop().waiting);
@@ -667,7 +670,7 @@ TEST_CASE("a capture planned again by a retirement can be shortened by it")
 // ---- Any block size
 // -------------------------------------------------------------------------------------------
 
-TEST_CASE("capture reports and holds the same at any block size")
+TEST_CASE("capture, and the output, come out the same at any block size")
 {
     // One seeded scenario of 13.4 s, compared every 107,520 samples, which blocks of 3,072, 480 and
     // 7 frames all divide. `make seeds` runs many more, at more sizes (test_capture_seeds.cpp).

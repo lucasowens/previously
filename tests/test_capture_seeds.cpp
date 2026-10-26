@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Previously — tests: capture comes out the same at any block size, over many seeded scenarios
-// (DESIGN.md §3.4, "Capture under change", and §10.1). Too slow for the sanitizers: `make seeds`
-// runs them from an optimized build.
+// Previously — tests: capture, and the output, come out the same at any block size, over many
+// seeded scenarios (DESIGN.md §3.4, "Capture under change", §5.7 and §10.1). Too slow for the
+// sanitizers: `make seeds` runs them from an optimized build.
 
 #include "capture_fixtures.hpp"
 
@@ -14,7 +14,7 @@
 namespace previously {
 namespace {
 
-TEST_CASE("capture reports and holds the same at any block size, over 200 seeded scenarios")
+TEST_CASE("capture, and the output, come out the same at any block size, over 200 seeded scenarios")
 {
     // Each scenario is 13.4 s, compared every 107,520 samples, which every size here divides.
     constexpr std::array<std::size_t, 5> sizes{3'072, 480, 32, 7, 1};

@@ -14,6 +14,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -53,6 +54,29 @@ public:
     /// Processes the block holding `when`, and every block before it.
     void run_through(sample_time when);
 
+    /// The input from now on: each sample's frame, by its sample. Silence until it is set.
+    void play(std::function<stereo_frame(std::int64_t)> input);
+
+    /// Keeps every output frame from now on, at its sample (output_at()).
+    void keep_output();
+
+    /// The output frame at `sample`, kept since keep_output().
+    [[nodiscard]] stereo_frame output_at(std::int64_t sample) const;
+
+    /// A downbeat the loop played, at its sample.
+    struct played_downbeat {
+        std::int64_t sample{0};
+        std::size_t  bar{0};
+    };
+
+    /// The loop's downbeats, and the samples of the grid's bar lines reported (each pulse that
+    /// starts a bar, to the nearest sample), since the rig began.
+    [[nodiscard]] const std::vector<played_downbeat>& downbeats() const noexcept;
+    [[nodiscard]] const std::vector<std::int64_t>&    bar_lines() const noexcept;
+
+    /// A hash of every output sample's bits since the rig began, in order.
+    [[nodiscard]] std::uint64_t output_hash() const noexcept;
+
     [[nodiscard]] engine& target() noexcept;
 
 private:
@@ -67,18 +91,31 @@ private:
     engine                   engine_;
     std::vector<timed_event> events_;
     std::size_t              next_event_{0};
-    std::vector<float>       silence_;
+    std::vector<float>       in_left_;
+    std::vector<float>       in_right_;
     std::vector<float>       out_left_;
     std::vector<float>       out_right_;
+
+    std::function<stereo_frame(std::int64_t)> input_;
+    std::optional<std::int64_t>               kept_from_;
+    std::vector<stereo_frame>                 kept_;
+    std::vector<played_downbeat>              downbeats_;
+    std::vector<std::int64_t>                 bar_lines_;
+    std::uint64_t                             output_hash_{14'695'981'039'346'656'037U};
 };
+
+/// The frame `loop` holds at tape position `position`, or silence where it holds none: what the
+/// player reads there.
+[[nodiscard]] stereo_frame
+frame_held(const engine& audio_engine, const captured_loop& loop, std::int64_t position);
 
 /// Where a loop's end line is on the tape, if it holds a window. A test reads it this way so that
 /// an empty loop fails the check rather than the run.
 [[nodiscard]] std::optional<std::int64_t> end_of(const captured_loop& loop);
 
 /// Checks that every page of the engine's pool has exactly its holders: the history for each page
-/// in it, and each loop for each page it holds. A page held by nobody is free. And that each loop
-/// holds every page of its run the recorder has taken.
+/// in it, and each loop for each page it holds, the one leaving the slot included. A page held by
+/// nobody is free. And that each loop holds every page of its run the recorder has taken.
 void check_holders(const engine& audio_engine);
 
 /// Everything capture reports and holds, as text: the loop report, and each loop's lines, numbering
@@ -91,8 +128,9 @@ void check_holders(const engine& audio_engine);
 /// The same seed adds the same scenario.
 void add_random_scenario(clocked_engine& rig, std::uint64_t seed, samples length);
 
-/// Runs one seeded scenario at each of `block_sizes`, and checks that capture reports and holds
-/// the same at every multiple of `checkpoint`, which each size must divide (DESIGN.md §10.1).
+/// Runs one seeded scenario at each of `block_sizes`, with noise in, and checks that capture
+/// reports and holds the same, and that the output is the same to the bit, at every multiple of
+/// `checkpoint`, which each size must divide (DESIGN.md §10.1).
 void check_any_block_size(std::uint64_t                seed,
                           std::span<const std::size_t> block_sizes,
                           samples                      checkpoint,

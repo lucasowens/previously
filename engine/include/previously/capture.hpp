@@ -88,12 +88,28 @@ enum class slot_state : std::uint8_t {
     final,        // every line is final
 };
 
-/// The loop report (DESIGN.md §3.4), as of the end of a block.
+/// A downbeat the loop played: its offset from the block's first frame, and its bar, from 0.
+struct loop_downbeat {
+    samples     offset{0};
+    std::size_t bar{0};
+};
+
+/// The loop report (DESIGN.md §3.4, §5.7), as of the end of a block. Capture fills the first
+/// four; the engine fills playback's from the player.
 struct loop_report {
+    /// A block of 3,072 frames holds at most 4 downbeats of bars of 16 ms, the shortest a 4 ms
+    /// pulse makes at 4 pulses a bar.
+    static constexpr std::size_t max_downbeats = 4;
+
     slot_state      slot{slot_state::empty};
     bool            waiting{false};     // a capture is waiting for its end line
     capture_outcome outcome{};          // the latest press's, as it stands now
     std::uint32_t   outcome_serial{0};  // changes whenever the outcome does
+
+    bool                                     playing{false};  // a loop is heard
+    std::size_t                              bar{0};          // the loop bar playing, from 0
+    std::size_t                              downbeat_count{0};
+    std::array<loop_downbeat, max_downbeats> downbeats{};
 };
 
 class capture {
@@ -105,10 +121,13 @@ public:
             sample_rate     rate,
             sample_time     input_latency) noexcept;
 
-    /// A press at `when`, asking for `bars`, planned from `grid` as it stands at that moment. It
-    /// first checks, as check() does, so it sees everything the grid knows. Audio thread. Bounded
-    /// time, no allocation.
-    void press(sample_time when, capture_bars bars, const clock_tracker& grid) noexcept;
+    /// A press made at `when`, asking for `bars`, applied at `now`: later than `when` when it
+    /// waited for a crossfade (DESIGN.md §5.7). Planned from `grid` as it stands then, with the
+    /// history at its press as far as it is still there. It first checks, as check() does, so it
+    /// sees everything the grid knows. Not while a capture's entry has begun. Audio thread.
+    /// Bounded time, no allocation.
+    void
+    press(sample_time when, sample_time now, capture_bars bars, const clock_tracker& grid) noexcept;
 
     /// At `now`, a moment the capture's state can change: after the clock edges at that moment, or
     /// as a fill-in commits, with `grid` as it stands then. Keeps the edges of the slot's lines
@@ -128,6 +147,21 @@ public:
 
     /// A capture waiting for its end line, or an empty loop.
     [[nodiscard]] const captured_loop& waiting() const noexcept;
+
+    /// The loop that left the slot, until release_leaving(): the player may still be fading it out
+    /// (DESIGN.md §5.7). Or an empty loop.
+    [[nodiscard]] const captured_loop& leaving() const noexcept;
+
+    /// The player has begun the waiting capture's entry into its first downbeat: it has started.
+    /// It is no longer superseded, it takes only new numbering if planned again, and if its line
+    /// would shorten or refuse it, it is refused and leaves the slot's way.
+    void enter_waiting() noexcept;
+
+    /// Whether the waiting capture's entry has begun.
+    [[nodiscard]] bool waiting_entered() const noexcept;
+
+    /// The leaving loop is no longer heard: its pages go back.
+    void release_leaving() noexcept;
 
 private:
     /// What is known of a line: where it is, and how sure that is.
@@ -169,6 +203,15 @@ private:
     [[nodiscard]] static std::optional<line_fix> locate(const clock_tracker& grid,
                                                         std::int64_t         sequence) noexcept;
 
+    /// A press's end line: the next bar line at most a quarter beat away, or the latest.
+    struct end_line {
+        std::int64_t bar{0};
+        std::int64_t sequence{0};
+    };
+
+    [[nodiscard]] static std::optional<end_line> end_line_of(sample_time          when,
+                                                             const clock_tracker& grid) noexcept;
+
     [[nodiscard]] capture_outcome plan(sample_time          when,
                                        capture_bars         bars,
                                        samples              history_begin,
@@ -199,20 +242,25 @@ private:
               std::int64_t       end_bar,
               bool               numbered_by_reset) noexcept;
     void take_slot() noexcept;
+    void leave_waiting() noexcept;
     void conclude(const capture_outcome& outcome) noexcept;
     void report_states() noexcept;
 
     [[nodiscard]] captured_loop& slot_loop() noexcept;
     [[nodiscard]] captured_loop& waiting_loop() noexcept;
+    [[nodiscard]] captured_loop& leaving_loop() noexcept;
 
     page_pool*      pool_;     // never null
     const recorder* history_;  // never null
     samples         margin_;   // the pre-roll and the read margin: 50 ms, rounded up
     sample_time     input_latency_;
 
-    // The slot's loop and a waiting capture's, one of each: a capture takes the slot by swapping.
-    std::array<captured_loop, 2> loops_;
+    // The slot's loop, a waiting capture's, and one leaving the slot, one of each: a capture takes
+    // the slot by moving the indices round.
+    std::array<captured_loop, 3> loops_;
     std::size_t                  slot_index_{0};
+    std::size_t                  waiting_index_{1};
+    std::size_t                  leaving_index_{2};
 
     // The waiting capture's press, to plan it again when the labels change and to fit it again
     // when its end line arrives: its moment and what it asked for; and as planned, what it holds,
@@ -225,6 +273,7 @@ private:
     std::int64_t waiting_end_bar_{0};
     sample_time  waiting_reserve_;
     labelling    waiting_labels_;
+    bool         waiting_entered_{false};
 
     loop_report report_;
 };

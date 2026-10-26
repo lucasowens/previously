@@ -44,6 +44,10 @@ endfunction()
 # Cortex-M7 do, and baseline x86-64 does not. PUBLIC, so engine code inlined into a consumer
 # follows the same rule. The Rack plugin compiles its own files with Rack's flags, which is why
 # rendered arithmetic lives in the engine's .cpp files (CODING_STANDARD §3.13).
+#
+# And no floating-point function sets errno, which changes no result: `std::sqrt` is then the
+# CPU's square root instruction alone, and the firmware links none of newlib's errno state, 832
+# bytes of RAM.
 function(previously_apply_float_rules target)
-    target_compile_options(${target} PUBLIC -ffp-contract=off)
+    target_compile_options(${target} PUBLIC -ffp-contract=off -fno-math-errno)
 endfunction()

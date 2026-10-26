@@ -10,6 +10,17 @@
 
 namespace previously {
 
+samples loop_margin(sample_rate rate) noexcept
+{
+    constexpr std::uint64_t milliseconds = 50;
+    constexpr std::uint64_t per_second   = 1'000;
+
+    const std::uint64_t frames =
+        ((std::uint64_t{rate.hz()} * milliseconds) + per_second - 1U) / per_second;
+
+    return samples{static_cast<std::int64_t>(frames)};
+}
+
 captured_loop::captured_loop(page_pool& pool) noexcept
     : pool_{&pool}
 {
@@ -89,6 +100,14 @@ void captured_loop::set_line(std::size_t index, const loop_line& line) noexcept
     expects(index <= bars_ && !empty());
 
     lines_[index] = line;
+}
+
+void captured_loop::renumber(std::int64_t number_of_first, bool numbered_by_a_reset) noexcept
+{
+    expects(!empty());
+
+    first_bar_         = number_of_first;
+    numbered_by_reset_ = numbered_by_a_reset;
 }
 
 void captured_loop::hold(tape_range range, const recorder& history) noexcept

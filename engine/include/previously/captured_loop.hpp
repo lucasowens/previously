@@ -50,6 +50,10 @@ struct loop_line {
     line_status status{line_status::predicted};
 };
 
+/// The pre-roll before a loop's window and the read margin after it: 50 ms, rounded up to whole
+/// samples so that it is at least 50 ms at any rate (DESIGN.md §5.3).
+[[nodiscard]] samples loop_margin(sample_rate rate) noexcept;
+
 /// A stretch of the tape, [first, end).
 struct tape_range {
     samples first{0};
@@ -112,6 +116,9 @@ public:
 
     /// Replaces line `index`, as more becomes known about it.
     void set_line(std::size_t index, const loop_line& line) noexcept;
+
+    /// Numbers the same window again: a capture that has started, planned again (DESIGN.md §5.7).
+    void renumber(std::int64_t number_of_first, bool numbered_by_a_reset) noexcept;
 
     /// Holds the pages under `range`, of at most max_pages, and gives back those outside it. Pages
     /// the recorder has taken are held now, and the rest by catch_up(). The run may start before

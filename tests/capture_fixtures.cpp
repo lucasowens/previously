@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <optional>
 #include <sstream>
@@ -28,10 +29,17 @@ std::vector<stereo_frame> tape_of(std::size_t pages, sample_rate rate)
 
 clocked_engine::clocked_engine(const engine_config& config, std::span<stereo_frame> tape)
     : engine_{config, tape},
-      silence_(config.max_block_frames),
+      in_left_(config.max_block_frames),
+      in_right_(config.max_block_frames),
       out_left_(config.max_block_frames),
       out_right_(config.max_block_frames)
 {
+    // Room for hours of downbeats and bar lines, so that recording them never allocates while a
+    // test guards the engine against allocating.
+    constexpr std::size_t room = 4'096;
+
+    downbeats_.reserve(room);
+    bar_lines_.reserve(room);
 }
 
 void clocked_engine::pulse(sample_time when)
@@ -88,15 +96,105 @@ void clocked_engine::run_until(samples end)
             ++next_event_;
         }
 
+        for (std::size_t i = 0; i < count; ++i) {
+            const stereo_frame frame =
+                input_ ? input_(start.value() + static_cast<std::int64_t>(i)) : stereo_frame{};
+
+            in_left_[i]  = frame.left;
+            in_right_[i] = frame.right;
+        }
+
         engine_.process(
             audio_block{
-                .in_left   = std::span{silence_}.first(count),
-                .in_right  = std::span{silence_}.first(count),
+                .in_left   = std::span{in_left_}.first(count),
+                .in_right  = std::span{in_right_}.first(count),
                 .out_left  = std::span{out_left_}.first(count),
                 .out_right = std::span{out_right_}.first(count),
             },
             std::span{block_events}.first(delivered));
+
+        if (kept_from_) {
+            for (std::size_t i = 0; i < count; ++i) {
+                kept_.push_back(stereo_frame{.left = out_left_[i], .right = out_right_[i]});
+            }
+        }
+
+        // FNV-1a over each sample's bits.
+        for (std::size_t i = 0; i < count; ++i) {
+            for (const float value : {out_left_[i], out_right_[i]}) {
+                output_hash_ ^= std::bit_cast<std::uint32_t>(value);
+                output_hash_ *= 1'099'511'628'211U;
+            }
+        }
+
+        const loop_report& report = engine_.loop();
+
+        for (const loop_downbeat& beat : std::span{report.downbeats}.first(report.downbeat_count)) {
+            downbeats_.push_back(
+                played_downbeat{.sample = start.value() + beat.offset.value(), .bar = beat.bar});
+        }
+
+        const clock_report& clock = engine_.clock();
+
+        for (const grid_pulse& pulse : std::span{clock.pulses}.first(clock.pulse_count)) {
+            if (pulse.starts_bar) {
+                bar_lines_.push_back((block_start + pulse.offset).nearest_sample().value());
+            }
+        }
     }
+}
+
+const std::vector<clocked_engine::played_downbeat>& clocked_engine::downbeats() const noexcept
+{
+    return downbeats_;
+}
+
+const std::vector<std::int64_t>& clocked_engine::bar_lines() const noexcept
+{
+    return bar_lines_;
+}
+
+std::uint64_t clocked_engine::output_hash() const noexcept
+{
+    return output_hash_;
+}
+
+void clocked_engine::play(std::function<stereo_frame(std::int64_t)> input)
+{
+    input_ = std::move(input);
+}
+
+void clocked_engine::keep_output()
+{
+    kept_from_ = engine_.sample_clock().value();
+    kept_.clear();
+}
+
+stereo_frame clocked_engine::output_at(std::int64_t sample) const
+{
+    // Checked only when it fails: a test reads many thousands of samples.
+    if (kept_from_ && sample >= *kept_from_ && std::cmp_less(sample - *kept_from_, kept_.size())) {
+        return kept_[static_cast<std::size_t>(sample - *kept_from_)];
+    }
+
+    FAIL("no output kept at sample " << sample);
+    return {};
+}
+
+stereo_frame
+frame_held(const engine& audio_engine, const captured_loop& loop, std::int64_t position)
+{
+    const std::int64_t page_frames = audio_engine.pages().page_frames().value();
+    const std::int64_t page        = floor_divide(position, page_frames);
+    const std::int64_t held        = page - loop.first_page();
+
+    if (position < 0 || held < 0 || std::cmp_greater_equal(held, loop.pages().size())) {
+        return {};
+    }
+
+    const auto frames = audio_engine.pages().frames(loop.pages()[static_cast<std::size_t>(held)]);
+
+    return frames[static_cast<std::size_t>(position - (page * page_frames))];
 }
 
 void clocked_engine::run_through(sample_time when)
@@ -156,7 +254,8 @@ void check_holders(const engine& audio_engine)
         }
     }
 
-    for (const captured_loop* loop : {&audio_engine.slot(), &audio_engine.waiting()}) {
+    for (const captured_loop* loop :
+         {&audio_engine.slot(), &audio_engine.waiting(), &audio_engine.leaving()}) {
         for (const page_pool::page_id page : loop->pages()) {
             ++expected[page];
         }
@@ -172,7 +271,8 @@ void check_holders(const engine& audio_engine)
     CHECK(wrong == 0U);
 
     // And each loop holds every page of its run the recorder has taken, final or not.
-    for (const captured_loop* loop : {&audio_engine.slot(), &audio_engine.waiting()}) {
+    for (const captured_loop* loop :
+         {&audio_engine.slot(), &audio_engine.waiting(), &audio_engine.leaving()}) {
         std::size_t taken = 0;
 
         for (std::size_t i = 0; i < loop->page_count(); ++i) {
@@ -472,13 +572,24 @@ void check_any_block_size(std::uint64_t                seed,
 
         add_random_scenario(rig, seed, checkpoint * checkpoints);
 
+        // Noise in, so that the loops played carry it, and the output is compared to the bit.
+        rig.play([seed](std::int64_t sample) {
+            test_noise noise{(seed * 1'000'003U) + static_cast<std::uint64_t>(sample)};
+
+            return stereo_frame{
+                .left  = static_cast<float>(noise.uniform(0.5)),
+                .right = static_cast<float>(noise.uniform(0.5)),
+            };
+        });
+
         for (std::int64_t k = 1; k <= checkpoints; ++k) {
             CAPTURE(k);
 
             rig.run_until(checkpoint * k);
             check_holders(rig.target());
 
-            const std::string described = describe_capture(rig.target());
+            const std::string described = describe_capture(rig.target()) + "output " +
+                                          std::to_string(rig.output_hash()) + "\n";
             const auto        index     = static_cast<std::size_t>(k - 1);
 
             if (reference.size() <= index) {

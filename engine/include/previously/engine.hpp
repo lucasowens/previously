@@ -13,6 +13,7 @@
 #include "previously/clock_events.hpp"
 #include "previously/clock_tracker.hpp"
 #include "previously/command.hpp"
+#include "previously/loop_player.hpp"
 #include "previously/page_pool.hpp"
 #include "previously/recorder.hpp"
 #include "previously/spsc_queue.hpp"
@@ -37,6 +38,11 @@ struct engine_config {
     /// arrived at the jacks. Not negative; 0 in Rack, whose blocks bring each block's audio with
     /// its own edges.
     sample_time input_latency{sample_time::from_samples(samples{0})};
+
+    /// L_out: how much later the output reaches the jack than the engine makes it (DESIGN.md
+    /// §3.5). Playback reads this much ahead, so a loop's downbeat leaves the jack on its line. Not
+    /// negative; 0 in Rack.
+    sample_time output_latency{sample_time::from_samples(samples{0})};
 };
 
 class engine {
@@ -117,6 +123,10 @@ public:
     /// A capture waiting for its end line, or an empty loop. Audio thread only.
     [[nodiscard]] const captured_loop& waiting() const noexcept;
 
+    /// The loop that left the slot while the player fades it out, or an empty loop. Audio thread
+    /// only.
+    [[nodiscard]] const captured_loop& leaving() const noexcept;
+
     /// The pool every page is held through, to see who holds what. Audio thread only.
     [[nodiscard]] const page_pool& pages() const noexcept;
 
@@ -131,14 +141,39 @@ private:
                            std::span<capture_bars, command_queue_capacity> presses) noexcept;
 
     /// The block's moments in time order (DESIGN.md §10.1): its start, with the commands; each
-    /// event's; and each fill-in's commit between them. Its own function, so that the frames of
-    /// report_clock() and update_ui_model() stay out of the deepest call chain.
+    /// event's; each fill-in's commit; and each of the player's. The output between them is
+    /// rendered as it goes. Its own function, so that the frames of report_clock() and
+    /// update_ui_model() stay out of the deepest call chain.
     void visit_moments(sample_time                  block_start,
                        sample_time                  block_end,
+                       const audio_block&           block,
                        std::span<const clock_event> events) noexcept;
 
-    /// Commits each fill-in due before `until`, and checks the capture at each one.
-    void follow_grid(sample_time until) noexcept;
+    /// The soonest moment still to come in the block, after the last visited: the next of
+    /// `events`, the tracker's next fill-in, or the player's next moment.
+    [[nodiscard]] std::optional<sample_time>
+    soonest_moment(sample_time block_start, std::span<const clock_event> events) const noexcept;
+
+    /// Renders and records the block's samples from `rendered` up to the sample `until`, and
+    /// returns how many of the block's samples are rendered then.
+    std::size_t render_segment(const audio_block& block,
+                               std::int64_t       first_sample,
+                               std::size_t        rendered,
+                               std::int64_t       until) noexcept;
+
+    /// Gives the tracker the edges at `when`, from `events[first]` on, and returns the index of the
+    /// first event after them.
+    [[nodiscard]] std::size_t apply_edges(sample_time                  when,
+                                          sample_time                  block_start,
+                                          sample_time                  block_end,
+                                          std::span<const clock_event> events,
+                                          std::size_t                  first) noexcept;
+
+    /// A press at `when`, applied now, or held for the player's crossfade to end.
+    void press_or_hold(sample_time when, capture_bars bars) noexcept;
+
+    /// Updates the player at `when`, and applies a held press once it no longer holds presses.
+    void update_player(sample_time when) noexcept;
 
     void report_clock(sample_time block_start, sample_time block_end) noexcept;
 
@@ -157,9 +192,19 @@ private:
     std::uint32_t              resets_seen_{0};
 
     // The tape. The pool is declared before everything that holds its pages, so it outlives them.
-    page_pool pool_;
-    recorder  recorder_;
-    capture   capture_;
+    page_pool   pool_;
+    recorder    recorder_;
+    capture     capture_;
+    loop_player player_;
+    loop_report loop_report_;
+
+    // A press made during a crossfade, waiting for it to end (DESIGN.md §5.7).
+    struct held_press {
+        sample_time  when;
+        capture_bars bars{capture_bars::one};
+    };
+
+    std::optional<held_press> held_press_;
 
     ui_model ui_;
 };
