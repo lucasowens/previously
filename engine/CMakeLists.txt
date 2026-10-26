@@ -9,6 +9,7 @@ add_library(previously_engine STATIC
     src/display.cpp
     src/engine.cpp
     src/font.cpp
+    src/loop_player.cpp
     src/page_pool.cpp
     src/recorder.cpp
     src/ui_model.cpp

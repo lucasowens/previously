@@ -31,6 +31,7 @@ add_executable(previously_tests
     test_capture.cpp
     test_capture_changes.cpp
     test_capture_floors.cpp
+    test_playback.cpp
     test_wav.cpp
     test_block_adapter.cpp
     test_rack_tape.cpp
@@ -60,9 +61,9 @@ add_test(NAME unit COMMAND previously_tests)
 
 # Seeded properties too slow for the sanitizers: the bar-line estimate's at PR #6's seed counts
 # (DESIGN.md §3.4), over a million estimates that take about a minute under the sanitizers; and
-# capture at every block size over 200 scenarios (§3.4, "Capture under change"). They run in their
-# own executable, registered only in builds without sanitizers: `make seeds` runs them from the
-# release preset, and `make test` and CI run `make seeds`.
+# capture and the output at every block size over 200 scenarios (§3.4, "Capture under change",
+# and §5.7). They run in their own executable, registered only in builds without sanitizers:
+# `make seeds` runs them from the release preset, and `make test` and CI run `make seeds`.
 add_executable(previously_seed_tests
     test_main.cpp
     planted_clock.cpp

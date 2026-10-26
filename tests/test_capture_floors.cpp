@@ -167,10 +167,14 @@ TEST_CASE("an end line late by more than the room under the 47-page limit shorte
 {
     // A hundredth above the no-press floors, an early press's run is 602 samples short of 46
     // pages for 2 bars, and 2,528 for 1. The end line's pulse 3,000 samples late makes each too
-    // long once the capture is fitted again at the line.
-    SUBCASE("2 bars: shortened to 1 at the line")
+    // long once the capture is fitted again at the line. Pressed a quarter beat early, each has
+    // begun its entry into its first downbeat by then (DESIGN.md §5.7): it has started, so it is
+    // refused rather than shortened. Pressed a tick before its line, 2 bars at 15.66 BPM begin no
+    // entry, and are shortened at the line when it comes 12,000 samples late.
+    SUBCASE("2 bars, no entry begun: shortened to 1 at the line")
     {
-        const loop_report report = report_at(15.58, capture_bars::two, column::no_press, 3'000);
+        const loop_report report =
+            report_at(15.66, capture_bars::two, column::every_early_press, 12'000);
 
         CHECK(report.outcome.result == capture_result::shortened);
         CHECK(report.outcome.asked == capture_bars::two);
@@ -178,6 +182,17 @@ TEST_CASE("an end line late by more than the room under the 47-page limit shorte
         CHECK(report.outcome.limit == capture_limit::max_pages);
         CHECK(report.outcome_serial == 2U);
         CHECK(report.slot == slot_state::provisional);
+    }
+
+    SUBCASE("2 bars, its entry begun: refused at the line, and no longer waiting")
+    {
+        const loop_report report = report_at(15.58, capture_bars::two, column::no_press, 3'000);
+
+        CHECK(report.outcome.result == capture_result::nothing_fits);
+        CHECK(report.outcome.limit == capture_limit::max_pages);
+        CHECK(report.outcome_serial == 2U);
+        CHECK_FALSE(report.waiting);
+        CHECK(report.slot == slot_state::empty);
     }
 
     SUBCASE("1 bar: refused at the line, and no longer waiting")

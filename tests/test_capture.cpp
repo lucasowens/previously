@@ -1110,7 +1110,8 @@ TEST_CASE("the pre-roll and the read margin are at least 50 ms at any rate")
 
 /// Capture with its own pool, recorder and tracker, run as the engine runs it: each fill-in's
 /// commit and each pulse in time order, with a check at each; then the tracker to the block's end,
-/// the recording, and capture's follow().
+/// the recording, and capture's follow(). With no player, a loop leaving the slot gives its pages
+/// back at once.
 struct capture_rig {
     static constexpr std::size_t block_frames = 480;
 
@@ -1144,6 +1145,7 @@ struct capture_rig {
         for (auto due = grid.next_fill_in(); due && *due < end;) {
             grid.advance(*due);
             captured.check(*due, grid);
+            captured.release_leaving();
 
             // Each commit comes after the last, or this would loop for ever.
             const std::optional<sample_time> next = grid.next_fill_in();
@@ -1181,6 +1183,7 @@ struct capture_rig {
             }
 
             captured.check(when, grid);
+            captured.release_leaving();
         }
 
         commit_before(end);
@@ -1206,7 +1209,8 @@ struct capture_rig {
     {
         run_until(when.whole_samples());
         deliver_before(when + sample_time::from_ticks(1));
-        captured.press(when, bars, grid);
+        captured.press(when, when, bars, grid);
+        captured.release_leaving();
     }
 };
 
@@ -1429,6 +1433,43 @@ TEST_CASE("a capture planned again has only the frames still there: the history 
     REQUIRE_FALSE(rig.captured.slot().empty());
     CHECK(rig.captured.slot().lines().back().position == samples{before});
     CHECK(rig.captured.slot().first_bar() == -4);
+}
+
+TEST_CASE("a press applied after it was made plans from the history as far as it still holds")
+{
+    // Pages of 8,192 frames, so 46 are 7.8 s, and one-beat bars of 4 pulses of 11,075 samples,
+    // the clock from 30,386. An 8-bar press 1.5 pulses after bar 8's line holds bars 0 to 7, its
+    // pre-roll from 27,986, in page 3. Made at 401,398, in page 48, it has the history from page
+    // 3. A press that waited for a crossfade applies later (DESIGN.md §5.7): at 401,408, where
+    // page 49 begins, the history is from page 4, though the recorder lets page 3 go only as it
+    // records that frame. Planned from the history then, the capture is shortened to 4 bars, bars
+    // 4 to 7.
+    constexpr std::int64_t page_frames = 8'192;
+    constexpr std::int64_t pulse       = 11'075;
+    constexpr std::int64_t origin      = 30'386;
+    constexpr std::int64_t made        = (49 * page_frames) - 10;
+    constexpr std::int64_t applied     = 49 * page_frames;
+
+    static_assert(made - (origin + (32 * pulse)) == pulse + (pulse / 2));
+    static_assert(origin - 2'400 >= 3 * page_frames && origin - 2'400 < 4 * page_frames);
+
+    capture_rig rig{one_beat_bars, page_frames};
+
+    for (std::int64_t i = 0; i < 36; ++i) {
+        rig.pulses.push_back(at_sample(origin + (i * pulse)));
+    }
+
+    rig.run_until(samples{applied});
+    rig.deliver_before(at_sample(applied) + sample_time::from_ticks(1));
+    rig.captured.press(at_sample(made), at_sample(applied), capture_bars::eight, rig.grid);
+
+    const capture_outcome& outcome = rig.captured.report().outcome;
+
+    CHECK(outcome.result == capture_result::shortened);
+    CHECK(outcome.kept == capture_bars::four);
+    CHECK(outcome.limit == capture_limit::history);
+    REQUIRE_FALSE(rig.captured.slot().empty());
+    CHECK(rig.captured.slot().first_bar() == 4);
 }
 
 TEST_CASE("a capture planned again keeps the frames of its own pages, though the history has "
